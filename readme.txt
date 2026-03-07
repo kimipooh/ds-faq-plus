@@ -60,8 +60,7 @@ When this plugin is deactivated and "WP DS FAQ" is activated, the special functi
 5. Edit Menu.
 
 == Changelog ==
-== 2.0.0 ==
-
+= 2.0.0 =
 Major refactoring and modernization of the plugin.
 
 Security Improvements
