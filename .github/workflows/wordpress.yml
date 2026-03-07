@@ -50,6 +50,9 @@ jobs:
           extensions: mysqli
           tools: composer:v2
 
+      - name: Show Subversion version
+        run: svn --version
+        
       - name: Validate composer.json
         run: composer validate --no-check-publish
 
