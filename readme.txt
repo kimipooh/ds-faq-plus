@@ -2,9 +2,9 @@
 Contributors: kimipooh
 Tags: faq, answer, question, documentation
 Requires at least: 6.0
-Tested up to: 6.7.2
+Tested up to: 6.9
 Requires PHP: 8.0
-Stable tag: 1.5.2
+Stable tag: 2.0.0
 License: GPL v2  or later
 License URI: http://www.gnu.org/licenses/gpl-2.0.html
 
@@ -35,6 +35,17 @@ About the detail information, please see the following site.
 
 == Frequently Asked Questions ==
 
+= Note on Plugin Name =
+
+This plugin uses the prefix "WP" to indicate compatibility with WordPress.
+It is an independent project and is not affiliated with, endorsed by, or
+officially associated with the WordPress project or the WordPress Foundation.
+
+The Plugin Check tool may display a "trademarked_term" warning because the
+plugin slug contains the term "wp". This usage follows the common convention
+used by many plugins and does not imply official endorsement.
+
+
 = Is it compatible between "WP DS FAQ Plus" and "WP DS FAQ"? =
 
  Yes, this plugin supports the compatibility with "WP DS FAQ" plugin.
@@ -49,6 +60,41 @@ When this plugin is deactivated and "WP DS FAQ" is activated, the special functi
 5. Edit Menu.
 
 == Changelog ==
+== 2.0.0 ==
+
+Major refactoring and modernization of the plugin.
+
+Security Improvements
+* SQL queries rewritten using $wpdb->prepare(), $wpdb->insert(), $wpdb->update()
+* Nonce verification added for admin and AJAX actions
+* Sanitization added for user input
+* Removed direct SQL execution patterns where possible
+
+WordPress Compatibility
+* Replaced deprecated date() usage with wp_date()
+* Implemented WordPress timezone handling
+* Improved compatibility with both timezone_string and gmt_offset settings
+
+Database Handling
+* Introduced dbDelta() for automatic table creation and schema updates
+* Improved installation reliability and compatibility with future WordPress updates
+
+Architecture Improvements
+* ajax.php removed and functionality integrated into main plugin
+* Plugin bootstrap separated from core implementation
+* wp-ds-faq.php now acts as minimal bootstrap loader
+* Main implementation moved to wp-ds-faq-plus.php
+
+Plugin Check
+* Plugin Check validation completed
+* All errors resolved
+* Only "trademarked_term" warning remains (see below)
+
+Backward Compatibility
+* Existing database structure preserved
+* Existing timestamps preserved
+* Existing installations continue to work without migration
+
 = 1.5.2 =
 * Fixed the problem of not applying to SVN properly.
 
@@ -238,3 +284,32 @@ Establishment of admin menu for FAQ in the Settings.
 = 1.0.12 =
 
 This version cannot add the category. If you use this version, please upgrade to 1.0.12-1 or later
+
+
+== 2.0.0 ==
+Major refactoring and modernization of the plugin.
+
+Security Improvements
+* SQL queries rewritten using $wpdb->prepare(), $wpdb->insert(), $wpdb->update()
+* Nonce verification added for admin and AJAX actions
+* Sanitization added for user input
+
+WordPress Compatibility
+* Replaced deprecated date() usage with wp_date()
+* Implemented WordPress timezone handling
+
+Database Handling
+* Introduced dbDelta() for automatic table creation and schema updates
+
+Architecture Improvements
+* ajax.php removed
+* Bootstrap loader separated from main implementation
+
+Plugin Check
+* Plugin Check validation completed
+* All errors resolved except "trademarked_term"
+
+
+Note on Plugin Name
+
+WP DS FAQ Plus is an independent plugin for WordPress and is not affiliated with or endorsed by the WordPress project.

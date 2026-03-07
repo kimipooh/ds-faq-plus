@@ -1,14 +1,48 @@
 <?php
-/*
-Plugin Name: WP DS FAQ Plus
-Plugin URI: http://kitaney.jp/~kitani/tools/wordpress/wp-ds-faq-plus_en.html
-Description: WP DS FAQ Plus is the expand of WP DS FAQ  plugin. The plugin bases on WP DS FAQ 1.3.3. This plugin includes the fixed some issues (Quotation and Security, such as SQL Injection and CSRF. ) , Japanese translation, improvement of interface, and SSL Admin setting.
-Version: 1.5.2
-Author: Kimiya Kitani
-Author URI: https://profiles.wordpress.org/kimipooh/
-Text Domain: wp-ds-faq-plus
-Domain Path: /lang
-*/
+if ( ! defined( 'ABSPATH' ) ) {
+    exit;
+}
+
+function wp_dsfaq_plus_install() {
+
+	global $wpdb;
+
+	require_once ABSPATH . 'wp-admin/includes/upgrade.php';
+
+	$table_name = $wpdb->prefix . "dsfaq_name";
+	$table_quest = $wpdb->prefix . "dsfaq_quest";
+
+	$charset_collate = $wpdb->get_charset_collate();
+
+	$sql1 = "CREATE TABLE $table_name (
+		id mediumint(9) NOT NULL AUTO_INCREMENT,
+		name_faq text NOT NULL,
+		sort int NOT NULL DEFAULT 0,
+		mode int NOT NULL DEFAULT 0,
+		sort_key varchar(50) DEFAULT '',
+		sort_order varchar(10) DEFAULT '',
+		visible int NOT NULL DEFAULT 1,
+		PRIMARY KEY (id)
+	) $charset_collate;";
+
+	$sql2 = "CREATE TABLE $table_quest (
+		id mediumint(9) NOT NULL AUTO_INCREMENT,
+		id_book int NOT NULL,
+		date datetime NOT NULL,
+		quest text NOT NULL,
+		answer text NOT NULL,
+		sort int NOT NULL DEFAULT 0,
+		PRIMARY KEY (id)
+	) $charset_collate;";
+
+	dbDelta($sql1);
+	dbDelta($sql2);
+}
+
+register_activation_hook(
+	WP_DSFAQ_PLUS_BOOTSTRAP_FILE,
+	'wp_dsfaq_plus_install'
+);
 
 class dsfaq{
     var $plugurl; // 設定からの変更 2011.03.19変更
@@ -25,7 +59,7 @@ class dsfaq{
     #   Конструктор                                              #
     ##############################################################------------------------------------------------------------#
     function __construct(){
-        $this->plugurl = WP_PLUGIN_URL.'/'.str_replace(basename(__FILE__),"",plugin_basename(__FILE__));
+        $this->plugurl = plugin_dir_url( WP_DSFAQ_PLUS_BOOTSTRAP_FILE );
 
 /**		SSL対策が必要。
 		- 1: ログイン後の設定画面からの編集（https://）
@@ -55,7 +89,7 @@ class dsfaq{
 		if( !defined('WP_DSFAQ_PLUS_ADMIN_CONTROL_CAPABILITY') )
 			define( 'WP_DSFAQ_PLUS_ADMIN_CONTROL_CAPABILITY', 'level_8'); 
 			
-        $this->plugdir = WP_PLUGIN_DIR.'/'.str_replace(basename(__FILE__),"",plugin_basename(__FILE__));
+        $this->plugdir = plugin_dir_path( WP_DSFAQ_PLUS_BOOTSTRAP_FILE );
         
         $this->wp_ds_faq_default_array['wp_ds_faq_db_ver']        = '0.3';
         $this->wp_ds_faq_plus_default_array['wp_ds_faq_plus_db_ver']   = '0.1'; // 2011.08.29 (1.0.12) Add custom_mode to dsfaq_name table for custom sort.
@@ -82,14 +116,31 @@ class dsfaq{
         add_action('admin_menu', array(&$this, 'add_to_settings_menu'));
         add_action('admin_head', array(&$this, 'add_to_admin_head'));
 
+        $ajax_actions = array('add_faq','delete_faqbook','save_quest','delete_quest','edit_quest','front_edit_quest','front_cancel_edit','update_quest','front_update_quest','q_change','save_settings','edit_name_book','save_name_book','change_faqdisplay','change_faqdisplaysort','change_faqdisplayorder','dsfaq_faqdisplay_visible','open_quest','restore_settings');
+        foreach ( $ajax_actions as $ajax_action ) {
+            add_action( 'wp_ajax_' . $ajax_action, array( &$this, 'dsfaq_ajax_bridge' ) );
+        }
+        add_action( 'wp_ajax_nopriv_open_quest', array( &$this, 'dsfaq_ajax_bridge' ) );
+
         add_shortcode('dsfaq', array(&$this, 'faq_shortcode'));
         
         add_filter('the_content', array(&$this, 'faq_hook'), 10 ,2);
         
-        register_activation_hook(__FILE__, array(&$this, 'installer'));
-        register_deactivation_hook(__FILE__, array(&$this, 'deactivate'));
+        register_activation_hook(WP_DSFAQ_PLUS_BOOTSTRAP_FILE, array(&$this, 'installer'));
+        register_deactivation_hook(WP_DSFAQ_PLUS_BOOTSTRAP_FILE, array(&$this, 'deactivate'));
     }
     # END dsfaq ##################################################------------------------------------------------------------#
+
+    function dsfaq_ajax_bridge(){
+        $hook_action = current_action();
+        if ( 0 === strpos( $hook_action, 'wp_ajax_nopriv_' ) ) {
+            $_POST['action'] = substr( $hook_action, 16 );
+        } elseif ( 0 === strpos( $hook_action, 'wp_ajax_' ) ) {
+            $_POST['action'] = substr( $hook_action, 8 );
+        }
+
+        dsfaq_plus_handle_ajax_action();
+    }
 
     ##############################################################
     # installer()                                                #
@@ -141,8 +192,7 @@ class dsfaq{
 			// modeにWP DS FAQ Plus用の拡張データ（1.0.9以降）が入っていたなら、それをcustom_modeに移行。modeの方は従来に戻す（１の位の値を適応）
         	$table_name = $wpdb->prefix."dsfaq_name";
 
-	        $sql = "SELECT * FROM `".$table_name."`"; 
-	        $select = $wpdb->get_results($sql, ARRAY_A);
+	        $select = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM %i", $table_name ), ARRAY_A );
 
     	    if($select){
         	    foreach ($select as $rows=>$data) {
@@ -163,11 +213,17 @@ class dsfaq{
         	    	// modeデータをmode_cunstomにコピーし、カスタムしたmodeデータを元に戻し、modeを差し替える
 			        // visibleの初期値は1（default value of visible is 1. All FAQ is published. (2011.09.07: 1.0.13)
         			// In case of displaying latest FAQ ([dsfaq latest=10 /]), you may have invisible data.
-	       			$sql = "UPDATE `".esc_sql($table_name)."` SET `visible`='1',`mode`='".esc_sql($mode)."',`custom_mode`='". esc_sql($custom_mode) ."' WHERE `id`='".esc_sql($data['id'])."'"; 
-//	       			$sql = "UPDATE `".$table_name."` SET `mode`='".$mode."',`custom_mode`='". $custom_mode ."' WHERE `id`='".k_escape($data['id'])."'"; 
-
-	       			
-		            $wpdb->query( $sql ); 
+	       			$wpdb->update(
+	       				$table_name,
+	       				array(
+	       					'visible' => 1,
+	       					'mode' => $mode,
+	       					'custom_mode' => $custom_mode,
+	       				),
+	       				array( 'id' => (int) $data['id'] ),
+	       				array( '%d', '%d', '%d' ),
+	       				array( '%d' )
+	       			);
 	            }
     	    }
         }
@@ -175,13 +231,17 @@ class dsfaq{
         // In case of displaying latest FAQ ([dsfaq latest=10 /]), you may have invisible data.
    		if( isset($settings['wp_ds_faq_plus_ver']) && $settings['wp_ds_faq_plus_ver'] < 1013 ){
         	$table_name = $wpdb->prefix."dsfaq_name";
-	        $sql = "SELECT * FROM `".esc_sql($table_name)."`"; 
-	        $select = $wpdb->get_results($sql, ARRAY_A);
+	        $select = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM %i", $table_name ), ARRAY_A );
 
-    	    if($select){
-        	    foreach ($select as $rows=>$data) {
-			       	$sql = "UPDATE `".esc_sql($table_name)."` SET `visible`='1' WHERE `id`='".esc_sql($data['id'])."'"; 
-				    $wpdb->query( $sql ); 	
+	    	    if($select){
+	        	    foreach ($select as $rows=>$data) {
+				    $wpdb->update(
+					$table_name,
+					array( 'visible' => 1 ),
+					array( 'id' => (int) $data['id'] ),
+					array( '%d' ),
+					array( '%d' )
+				    );
 				}
 			}
    		}
@@ -235,12 +295,10 @@ class dsfaq{
         
         if($settings['wp_ds_faq_ver'] < 132){
             $table_name = $wpdb->prefix."dsfaq_name";
-            $sql = ' ALTER TABLE `'.$table_name.'` DEFAULT CHARSET=utf8, MODIFY COLUMN `name_faq` TEXT CHARACTER SET utf8 ';
-            $wpdb->query( $sql );
+            $wpdb->query( $wpdb->prepare( " ALTER TABLE %i DEFAULT CHARSET=utf8, MODIFY COLUMN `name_faq` TEXT CHARACTER SET utf8 ", $table_name ) );
             
             $table_name = $wpdb->prefix."dsfaq_quest";
-            $sql = ' ALTER TABLE `'.$table_name.'` DEFAULT CHARSET=utf8, MODIFY COLUMN `quest` TEXT CHARACTER SET utf8, MODIFY COLUMN `answer` TEXT CHARACTER SET utf8 ';
-            $wpdb->query( $sql );
+            $wpdb->query( $wpdb->prepare( " ALTER TABLE %i DEFAULT CHARSET=utf8, MODIFY COLUMN `quest` TEXT CHARACTER SET utf8, MODIFY COLUMN `answer` TEXT CHARACTER SET utf8 ", $table_name ) );
             
             $settings['wp_ds_faq_db_ver'] = '0.3';
             $settings['wp_ds_faq_ver']    = '132';
@@ -286,9 +344,10 @@ class dsfaq{
         //<![CDATA[
         function dsfaq_open_quest(id){
           document.getElementById("dsfaq_answer_" + id).innerHTML = '<img src="<?php echo $this->plugurl_front; ?>img/ajax-loader.gif" />';
-              var mysack = new sack("<?php echo $this->plugurl_front; ?>ajax.php" );
+              var mysack = new sack("<?php echo admin_url( 'admin-ajax.php' ); ?>" );
             mysack.execute = 1;
             mysack.method = 'POST';
+            mysack.setVar( 'dsfaq_nonce', '<?php echo wp_create_nonce( 'dsfaq_ajax_nonce' ); ?>' );
             mysack.setVar( 'action', 'open_quest' );
             mysack.setVar( 'id', id );
             mysack.onError = function() { alert('Ajax error. [Error id: 10]' )};
@@ -313,9 +372,10 @@ class dsfaq{
         function dsfaq_front_edit_quest(id){
             document.getElementById("dsfaq_quest_" + id).innerHTML = '<img src="<?php echo $this->plugurl_front; ?>img/ajax-loader.gif" />';
             document.getElementById("dsfaq_answer_" + id).innerHTML = '<img src="<?php echo $this->plugurl_front; ?>img/ajax-loader.gif" />';
-            var mysack = new sack("<?php echo $this->plugurl_front; ?>ajax.php" );
+            var mysack = new sack("<?php echo admin_url( 'admin-ajax.php' ); ?>" );
             mysack.execute = 1;
             mysack.method = 'POST';
+            mysack.setVar( 'dsfaq_nonce', '<?php echo wp_create_nonce( 'dsfaq_ajax_nonce' ); ?>' );
             mysack.setVar( 'action', 'front_edit_quest' );
             mysack.setVar( 'id', id );
             mysack.onError = function() { alert('Ajax error. [Error id: 10]' )};
@@ -324,9 +384,10 @@ class dsfaq{
         }
         function dsfaq_front_cancel_edit(id){
             document.getElementById("dsfaq_answer_" + id).innerHTML = '<img src="<?php echo $this->plugurl_front; ?>img/ajax-loader.gif" />';
-            var mysack = new sack("<?php echo $this->plugurl_front; ?>ajax.php" );
+            var mysack = new sack("<?php echo admin_url( 'admin-ajax.php' ); ?>" );
             mysack.execute = 1;
             mysack.method = 'POST';
+            mysack.setVar( 'dsfaq_nonce', '<?php echo wp_create_nonce( 'dsfaq_ajax_nonce' ); ?>' );
             mysack.setVar( 'action', 'front_cancel_edit' );
             mysack.setVar( 'id', id );
             mysack.onError = function() { alert('Ajax error. [Error id: 10]' )};
@@ -336,9 +397,10 @@ class dsfaq{
         function dsfaq_front_update_quest(id){
             var dsfaq_quest = document.getElementById("dsfaq_inp_quest_" + id).value;
             var dsfaq_answer = document.getElementById("dsfaq_txt_answer_" + id).value;
-            var mysack = new sack("<?php echo $this->plugurl_front; ?>ajax.php" );
+            var mysack = new sack("<?php echo admin_url( 'admin-ajax.php' ); ?>" );
             mysack.execute = 1;
             mysack.method = 'POST';
+            mysack.setVar( 'dsfaq_nonce', '<?php echo wp_create_nonce( 'dsfaq_ajax_nonce' ); ?>' );
             mysack.setVar( 'action', 'front_update_quest' );
             mysack.setVar( 'id', id );
             mysack.setVar( 'dsfaq_quest', dsfaq_quest );
@@ -348,10 +410,11 @@ class dsfaq{
             return true;
         }
         function dsfaq_front_delete_quest(id){
-            var mysack = new sack("<?php echo $this->plugurl_front; ?>ajax.php" );
+            var mysack = new sack("<?php echo admin_url( 'admin-ajax.php' ); ?>" );
             var front = 1;
             mysack.execute = 1;
             mysack.method = 'POST';
+            mysack.setVar( 'dsfaq_nonce', '<?php echo wp_create_nonce( 'dsfaq_ajax_nonce' ); ?>' );
             mysack.setVar( 'action', 'delete_quest' );
             mysack.setVar( 'id', id );
             mysack.setVar( 'front', front );
@@ -411,7 +474,6 @@ class dsfaq{
     #  Говорим WordPress-у что у нас многоязычие в плагине       #
     ##############################################################------------------------------------------------------------#
     function enable_getext() {
-        load_plugin_textdomain('wp-ds-faq-plus');
     }
     # END enable_getext ##########################################------------------------------------------------------------#
     
@@ -537,7 +599,7 @@ class dsfaq{
             if($mode == "0"){  // 2011.07.19: 1.0.9 for sort
                 if(is_array($quest)){
                     $results .= '<ol class="dsfaq_ol_quest">';
-                    foreach ($quest as $s) { $results .= '<li id="dsfaq_li_'.esc_attr($s['id']).'"><a href="#'.esc_attr($s['id']).'">'.strip_tags($s['quest']).'</a></li>'; }
+                    foreach ($quest as $s) { $results .= '<li id="dsfaq_li_'.esc_attr($s['id']).'"><a href="#'.esc_attr($s['id']).'">'.wp_strip_all_tags($s['quest']).'</a></li>'; }
 
   			    	// 2011.08.25 (1.0.11) Linkage of WP-PostRatings Plugin (Please see settings).
 		        	if(!empty($quest)){
@@ -552,7 +614,7 @@ class dsfaq{
 
                     foreach ($quest as $s) {
                         $results .= '<div class="dsfaq_qa_block" id="dsfaq_qa_block_'.esc_attr($s['id']).'">';
-                        $results .= '<p><a name="'.esc_attr($s['id']).'"></a><span class="dsfaq_quest_title">'.__('Question:', 'wp-ds-faq-plus').'</span> <span class="dsfaq_quest" id="dsfaq_quest_'.esc_attr($s['id']).'">'.strip_tags($s['quest']).'</span></p>';
+                        $results .= '<p><a name="'.esc_attr($s['id']).'"></a><span class="dsfaq_quest_title">'.__('Question:', 'wp-ds-faq-plus').'</span> <span class="dsfaq_quest" id="dsfaq_quest_'.esc_attr($s['id']).'">'.wp_strip_all_tags($s['quest']).'</span></p>';
                         $results .= '<p><span class="dsfaq_answer_title">'.__('Answer:', 'wp-ds-faq-plus').'</span></p>';
                         $results .= '<div id="dsfaq_answer_'.esc_attr($s['id']).'"><div class="dsfaq_answer">';
                         $results .= wp_kses_post($s['answer']);					
@@ -584,7 +646,7 @@ class dsfaq{
                 if(is_array($quest)){
                     $results .= '<ol class="dsfaq_ol_quest">';
                     foreach ($quest as $s) { 
-                        $results .= '<li id="dsfaq_quest_'.esc_attr($s['id']).'"><a href="#_" onclick="dsfaq_open_quest('.esc_attr($s['id']).');">'.strip_tags($s['quest']).'</a></li>';
+                        $results .= '<li id="dsfaq_quest_'.esc_attr($s['id']).'"><a href="#_" onclick="dsfaq_open_quest('.esc_attr($s['id']).');">'.wp_strip_all_tags($s['quest']).'</a></li>';
                         $results .= '<div id="dsfaq_answer_'.esc_attr($s['id']).'"></div>';
                         $results .= '<div class="dsfaq_tools" id="dsfaq_tools_'.esc_attr($s['id']).'"></div>';
                     }
@@ -635,7 +697,7 @@ class dsfaq{
        // 2011.04.01: Add Main Menu
        // 2011.08.24 (1.0.11): 編集者でもFAQの編集ができるようにする
        // 2011.08.25 (1.0.11): 設定名の多言語化
-       	add_menu_page(__('WP DS FAQ Plus', 'wp-ds-faq-plus'), __('FAQ', 'wp-ds-faq-plus'), $settings['wp_dsfaq_plus_editor_permission'], __FILE__, array(&$this, 'options_page') );
+       	add_menu_page(__('WP DS FAQ Plus', 'wp-ds-faq-plus'), __('FAQ', 'wp-ds-faq-plus'), $settings['wp_dsfaq_plus_editor_permission'], 'wp-ds-faq-plus', array(&$this, 'options_page') );
 
        // 2011.04.24 (1.0.6): カスタムメニューのサブメニューに全カテゴリーを表示（将来的には多言語対応にしたい）
        // 2011.08.26 (1.0.11): 権限の引数を渡すの忘れていた
@@ -643,7 +705,7 @@ class dsfaq{
 
         // 2011.08.24 (1.0.11): 設定の「DS FAQ Plus」は管理者権限が必要とする（従来のまま）
         // そのためには、ここでは編集者以上に権限を与えて置いて、別途設定にアクセスしたときに制限するしかない
-        add_options_page(__('WP DS FAQ Plus Admin Settings', 'wp-ds-faq-plus'), __('FAQ Settings','wp-ds-faq-plus'), $settings['wp_dsfaq_plus_admin_permission'], __FILE__.'&admin_page=1', array(&$this, 'options_page'));
+        add_options_page(__('WP DS FAQ Plus Admin Settings', 'wp-ds-faq-plus'), __('FAQ Settings','wp-ds-faq-plus'), $settings['wp_dsfaq_plus_admin_permission'], 'wp-ds-faq-plus-admin', array(&$this, 'options_page'));
 //        add_options_page('WP DS FAQ Plus Admin Settings', 'DS FAQ Plus', WP_DSFAQ_PLUS_ADMIN_EDIT_CAPABILITY, __FILE__, $this->admin_settings_menu);
        
         // 以下は、管理メニューに最初にアクセスしたときに出るメニュー
@@ -658,8 +720,7 @@ class dsfaq{
 
 // 2011.08.22 (1.0.10): サブメニューは、名前順に並ぶように変更（ID順だと分かりづらい）
 //        $sql = "SELECT * FROM `".$table_name."` ORDER BY `id` ASC"; 
-        $sql = "SELECT * FROM `".esc_sql($table_name)."` ORDER BY `name_faq` ASC"; 
-        $select = $wpdb->get_results($sql, ARRAY_A);
+        $select = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM %i ORDER BY `name_faq` ASC", $table_name ), ARRAY_A );
 
         if($select){
             foreach ($select as $s) {
@@ -667,7 +728,7 @@ class dsfaq{
                 $sid = (int) $s['id']; // 2011.08.29 (1.0.12) セキュリティ対策
 //                if(is_int($sid) && $sid > 1)
                 if(is_int($sid) && $sid > 0) // 2011.09.13 (1.0.13) fix（最初のカテゴリーが表示されない問題）
-            	add_submenu_page(__FILE__, strip_tags($s['name_faq']), strip_tags($s['name_faq']), $permission, __FILE__.'&add_sub_id='.$sid, array(&$this, 'options_page'));
+            	add_submenu_page('wp-ds-faq-plus', wp_strip_all_tags($s['name_faq']), wp_strip_all_tags($s['name_faq']), $permission, 'wp-ds-faq-plus&add_sub_id='.$sid, array(&$this, 'options_page'));
             }
         }
     }
@@ -702,17 +763,17 @@ class dsfaq{
 		if(isset($_POST["wdfp-form"]) && $_POST["wdfp-form"]){
 		    // CSRF Check
 			if(check_admin_referer("wdfp-nonce-key", "wdfp-form")){
-				if ($_POST['posted'] == 'Y' && $this->settings_admin_permission){
+				if ( isset( $_POST['posted'] ) && 'Y' === sanitize_text_field( wp_unslash( $_POST['posted'] ) ) && $this->settings_admin_permission ){
 				   // Save the settings.
 				   if(!isset($_POST['wp_dsfaq_plus_general_display_title'])) $settings['wp_dsfaq_plus_general_display_title'] = 0;
-				   else $settings['wp_dsfaq_plus_general_display_title'] = intval($_POST['wp_dsfaq_plus_general_display_title']);
+				   else $settings['wp_dsfaq_plus_general_display_title'] = absint( wp_unslash( $_POST['wp_dsfaq_plus_general_display_title'] ) );
 
 				   if(!isset($_POST['wp_dsfaq_plus_enable_ratings'])) $settings['wp_dsfaq_plus_enable_ratings'] = 0;
-				   else $settings['wp_dsfaq_plus_enable_ratings'] 	= intval($_POST['wp_dsfaq_plus_enable_ratings']);
+				   else $settings['wp_dsfaq_plus_enable_ratings'] 	= absint( wp_unslash( $_POST['wp_dsfaq_plus_enable_ratings'] ) );
 
 				   if(!isset($_POST['wp_dsfaq_plus_editor_permission'])) $settings['wp_dsfaq_plus_editor_permission'] = "";
 				   else{
-				     $settings['wp_dsfaq_plus_editor_permission'] = str_replace("\\", "", $_POST['wp_dsfaq_plus_editor_permission']);
+				     $settings['wp_dsfaq_plus_editor_permission'] = str_replace("\\", "", sanitize_text_field( wp_unslash( $_POST['wp_dsfaq_plus_editor_permission'] ) ) );
 				     $settings['wp_dsfaq_plus_editor_permission'] = str_replace("\"", "", $settings['wp_dsfaq_plus_editor_permission']);
 				     $settings['wp_dsfaq_plus_editor_permission'] = str_replace("¥", "", $settings['wp_dsfaq_plus_editor_permission']);
 				     $settings['wp_dsfaq_plus_editor_permission'] = str_replace("'", "", $settings['wp_dsfaq_plus_editor_permission']);
@@ -720,7 +781,7 @@ class dsfaq{
 				   }
 				   if(!isset($_POST['wp_dsfaq_plus_admin_permission'])) $settings['wp_dsfaq_plus_admin_permission'] = "";
 				   else{
-				     $settings['wp_dsfaq_plus_admin_permission'] = str_replace("\\", "", $_POST['wp_dsfaq_plus_admin_permission']);
+				     $settings['wp_dsfaq_plus_admin_permission'] = str_replace("\\", "", sanitize_text_field( wp_unslash( $_POST['wp_dsfaq_plus_admin_permission'] ) ) );
 				     $settings['wp_dsfaq_plus_admin_permission'] = str_replace("\"", "", $settings['wp_dsfaq_plus_admin_permission']);
 				     $settings['wp_dsfaq_plus_admin_permission'] = str_replace("¥", "", $settings['wp_dsfaq_plus_admin_permission']);
 				     $settings['wp_dsfaq_plus_admin_permission'] = str_replace("'", "", $settings['wp_dsfaq_plus_admin_permission']);
@@ -729,19 +790,19 @@ class dsfaq{
 
 				   // 2011.08.26 (1.0.11): データが存在しない場合には「0」を入れておくこと
 				   if(!isset($_POST['wp_dsfaq_plus_disable_all_delete']))  $settings['wp_dsfaq_plus_disable_all_delete'] = 0;
-				   else $settings['wp_dsfaq_plus_disable_all_delete'] = intval($_POST['wp_dsfaq_plus_disable_all_delete']);
+				   else $settings['wp_dsfaq_plus_disable_all_delete'] = absint( wp_unslash( $_POST['wp_dsfaq_plus_disable_all_delete'] ) );
 
 				   if(!isset($_POST['wp_dsfaq_plus_disable_category_delete'])) $settings['wp_dsfaq_plus_disable_category_delete'] = 0;
-				   else $settings['wp_dsfaq_plus_disable_category_delete'] = intval($_POST['wp_dsfaq_plus_disable_category_delete']);
+				   else $settings['wp_dsfaq_plus_disable_category_delete'] = absint( wp_unslash( $_POST['wp_dsfaq_plus_disable_category_delete'] ) );
 
 				   if(!isset($_POST['wp_dsfaq_plus_disable_edit_delete']) ) $settings['wp_dsfaq_plus_disable_edit_delete'] = 0;
-				   else $settings['wp_dsfaq_plus_disable_edit_delete'] = intval($_POST['wp_dsfaq_plus_disable_edit_delete']);
+				   else $settings['wp_dsfaq_plus_disable_edit_delete'] = absint( wp_unslash( $_POST['wp_dsfaq_plus_disable_edit_delete'] ) );
 
 				   if(!isset($_POST['wp_dsfaq_plus_disable_frontedit_delete'])) $settings['wp_dsfaq_plus_disable_frontedit_delete'] = 0;
-				   else $settings['wp_dsfaq_plus_disable_frontedit_delete'] = intval($_POST['wp_dsfaq_plus_disable_frontedit_delete']);
+				   else $settings['wp_dsfaq_plus_disable_frontedit_delete'] = absint( wp_unslash( $_POST['wp_dsfaq_plus_disable_frontedit_delete'] ) );
 
 				   if(!isset($_POST['wp_dsfaq_plus_apply_safetyoptions_to_admin'])) $settings['wp_dsfaq_plus_apply_safetyoptions_to_admin'] = 0;
-				   else $settings['wp_dsfaq_plus_apply_safetyoptions_to_admin'] = intval($_POST['wp_dsfaq_plus_apply_safetyoptions_to_admin']);
+				   else $settings['wp_dsfaq_plus_apply_safetyoptions_to_admin'] = absint( wp_unslash( $_POST['wp_dsfaq_plus_apply_safetyoptions_to_admin'] ) );
 
 				update_option('wp_ds_faq_array', $settings);
 			}
@@ -769,9 +830,10 @@ class dsfaq{
             var dsfaq_css   = document.getElementById("dsfaq_css").value;
             var dsfaq_copyr = document.getElementById("dsfaq_copyr").checked;
             document.getElementById("dsfaq_progress").innerHTML = '<img src="<?php echo $this->plugurl; ?>img/ajax-loader.gif" />';
-            var mysack = new sack("<?php echo $this->plugurl; ?>ajax.php" );
+            var mysack = new sack("<?php echo admin_url( 'admin-ajax.php' ); ?>" );
             mysack.execute = 1;
             mysack.method = 'POST';
+            mysack.setVar( 'dsfaq_nonce', '<?php echo wp_create_nonce( 'dsfaq_ajax_nonce' ); ?>' );
             mysack.setVar( 'action', 'save_settings' );
             mysack.setVar( 'dsfaq_h1', dsfaq_h1 );
             mysack.setVar( 'dsfaq_h2', dsfaq_h2 );
@@ -783,9 +845,10 @@ class dsfaq{
         }
         function dsfaq_restore_settings(){
             document.getElementById("dsfaq_progress").innerHTML = '<img src="<?php echo $this->plugurl; ?>img/ajax-loader.gif" />';
-            var mysack = new sack("<?php echo $this->plugurl; ?>ajax.php" );
+            var mysack = new sack("<?php echo admin_url( 'admin-ajax.php' ); ?>" );
             mysack.execute = 1;
             mysack.method = 'POST';
+            mysack.setVar( 'dsfaq_nonce', '<?php echo wp_create_nonce( 'dsfaq_ajax_nonce' ); ?>' );
             mysack.setVar( 'action', 'restore_settings' );
             mysack.onError = function() { alert('Ajax error. [Error id: 9]' )};
             mysack.runAJAX();
@@ -966,7 +1029,7 @@ class dsfaq{
         global $wpdb;
 
 		// 2011.08.24 (1.0.11): Admin Settings
-    	if(isset($_GET['admin_page'])){
+    	if(isset($_GET['admin_page']) || (isset($_GET['page']) && $_GET['page'] === 'wp-ds-faq-plus-admin')){
     		$this->admin_settings_page();
     		return;
 		}
@@ -990,9 +1053,10 @@ class dsfaq{
         function dsfaq_add_input(){
             var inputText = document.getElementById("name_faq").value;
             document.getElementById("s1").innerHTML = '<img src="<?php echo $this->plugurl; ?>img/ajax-loader.gif" />';
-            var mysack = new sack("<?php echo $this->plugurl; ?>ajax.php" );
+            var mysack = new sack("<?php echo admin_url( 'admin-ajax.php' ); ?>" );
             mysack.execute = 1;
             mysack.method = 'POST';
+            mysack.setVar( 'dsfaq_nonce', '<?php echo wp_create_nonce( 'dsfaq_ajax_nonce' ); ?>' );
             mysack.setVar( 'action', 'add_faq' );
             mysack.setVar( 'input_faq', inputText );
             mysack.onError = function() { alert('Ajax error. [Error id: 1]' )};
@@ -1000,9 +1064,10 @@ class dsfaq{
             return true;
         }
         function delete_faqbook(id){
-            var mysack = new sack("<?php echo $this->plugurl; ?>ajax.php" );
+            var mysack = new sack("<?php echo admin_url( 'admin-ajax.php' ); ?>" );
             mysack.execute = 1;
             mysack.method = 'POST';
+            mysack.setVar( 'dsfaq_nonce', '<?php echo wp_create_nonce( 'dsfaq_ajax_nonce' ); ?>' );
             mysack.setVar( 'action', 'delete_faqbook' );
             mysack.setVar( 'id', id );
             mysack.onError = function() { alert('Ajax error. [Error id: 2]' )};
@@ -1026,9 +1091,10 @@ class dsfaq{
         function save_quest(id){
             var dsfaq_quest = document.getElementById("dsfaq_quest").value;
             var dsfaq_answer = document.getElementById("dsfaq_answer").value;
-            var mysack = new sack("<?php echo $this->plugurl; ?>ajax.php" );
+            var mysack = new sack("<?php echo admin_url( 'admin-ajax.php' ); ?>" );
             mysack.execute = 1;
             mysack.method = 'POST';
+            mysack.setVar( 'dsfaq_nonce', '<?php echo wp_create_nonce( 'dsfaq_ajax_nonce' ); ?>' );
             mysack.setVar( 'action', 'save_quest' );
             mysack.setVar( 'id', id );
             mysack.setVar( 'dsfaq_quest', dsfaq_quest );
@@ -1038,9 +1104,10 @@ class dsfaq{
             return true;
         }
         function delete_quest(id){
-            var mysack = new sack("<?php echo $this->plugurl; ?>ajax.php" );
+            var mysack = new sack("<?php echo admin_url( 'admin-ajax.php' ); ?>" );
             mysack.execute = 1;
             mysack.method = 'POST';
+            mysack.setVar( 'dsfaq_nonce', '<?php echo wp_create_nonce( 'dsfaq_ajax_nonce' ); ?>' );
             mysack.setVar( 'action', 'delete_quest' );
             mysack.setVar( 'id', id );
             mysack.onError = function() { alert('Ajax error. [Error id: 4]' )};
@@ -1048,9 +1115,10 @@ class dsfaq{
             return true;
         }
         function edit_quest(id){
-            var mysack = new sack("<?php echo $this->plugurl; ?>ajax.php" );
+            var mysack = new sack("<?php echo admin_url( 'admin-ajax.php' ); ?>" );
             mysack.execute = 1;
             mysack.method = 'POST';
+            mysack.setVar( 'dsfaq_nonce', '<?php echo wp_create_nonce( 'dsfaq_ajax_nonce' ); ?>' );
             mysack.setVar( 'action', 'edit_quest' );
             mysack.setVar( 'id', id );
             mysack.onError = function() { alert('Ajax error. [Error id: 5]' )};
@@ -1067,9 +1135,10 @@ class dsfaq{
         function update_quest(id, id_book){
             var dsfaq_quest = document.getElementById("dsfaq_quest").value;
             var dsfaq_answer = document.getElementById("dsfaq_answer").value;
-            var mysack = new sack("<?php echo $this->plugurl; ?>ajax.php" );
+            var mysack = new sack("<?php echo admin_url( 'admin-ajax.php' ); ?>" );
             mysack.execute = 1;
             mysack.method = 'POST';
+            mysack.setVar( 'dsfaq_nonce', '<?php echo wp_create_nonce( 'dsfaq_ajax_nonce' ); ?>' );
             mysack.setVar( 'action', 'update_quest' );
             mysack.setVar( 'id', id );
             mysack.setVar( 'id_book', id_book );
@@ -1080,9 +1149,10 @@ class dsfaq{
             return true;
         }
         function dsfaq_q_change(to, id_book, id){
-            var mysack = new sack("<?php echo $this->plugurl; ?>ajax.php" );
+            var mysack = new sack("<?php echo admin_url( 'admin-ajax.php' ); ?>" );
             mysack.execute = 1;
             mysack.method = 'POST';
+            mysack.setVar( 'dsfaq_nonce', '<?php echo wp_create_nonce( 'dsfaq_ajax_nonce' ); ?>' );
             mysack.setVar( 'action', 'q_change' );
             mysack.setVar( 'to', to );
             mysack.setVar( 'id_book', id_book );
@@ -1133,9 +1203,10 @@ class dsfaq{
             var dsfaq_css   = document.getElementById("dsfaq_css").value;
             var dsfaq_copyr = document.getElementById("dsfaq_copyr").checked;
             document.getElementById("dsfaq_progress").innerHTML = '<img src="<?php echo $this->plugurl; ?>img/ajax-loader.gif" />';
-            var mysack = new sack("<?php echo $this->plugurl; ?>ajax.php" );
+            var mysack = new sack("<?php echo admin_url( 'admin-ajax.php' ); ?>" );
             mysack.execute = 1;
             mysack.method = 'POST';
+            mysack.setVar( 'dsfaq_nonce', '<?php echo wp_create_nonce( 'dsfaq_ajax_nonce' ); ?>' );
             mysack.setVar( 'action', 'save_settings' );
             mysack.setVar( 'dsfaq_h1', dsfaq_h1 );
             mysack.setVar( 'dsfaq_h2', dsfaq_h2 );
@@ -1147,18 +1218,20 @@ class dsfaq{
         }
         function dsfaq_restore_settings(){
             document.getElementById("dsfaq_progress").innerHTML = '<img src="<?php echo $this->plugurl; ?>img/ajax-loader.gif" />';
-            var mysack = new sack("<?php echo $this->plugurl; ?>ajax.php" );
+            var mysack = new sack("<?php echo admin_url( 'admin-ajax.php' ); ?>" );
             mysack.execute = 1;
             mysack.method = 'POST';
+            mysack.setVar( 'dsfaq_nonce', '<?php echo wp_create_nonce( 'dsfaq_ajax_nonce' ); ?>' );
             mysack.setVar( 'action', 'restore_settings' );
             mysack.onError = function() { alert('Ajax error. [Error id: 9]' )};
             mysack.runAJAX();
             return true;
         }
          function dsfaq_edit_name_book(id){
-            var mysack = new sack("<?php echo $this->plugurl; ?>ajax.php" );
+            var mysack = new sack("<?php echo admin_url( 'admin-ajax.php' ); ?>" );
             mysack.execute = 1;
             mysack.method = 'POST';
+            mysack.setVar( 'dsfaq_nonce', '<?php echo wp_create_nonce( 'dsfaq_ajax_nonce' ); ?>' );
             mysack.setVar( 'action', 'edit_name_book' );
             mysack.setVar( 'id', id );
             mysack.onError = function() { alert('Ajax error. [Error id: 10]' )};
@@ -1167,9 +1240,10 @@ class dsfaq{
         }
         function dsfaq_save_name_book(id){
             var dsfaq_name_book = document.getElementById("dsfaq_input_bookname_" + id).value;
-            var mysack = new sack("<?php echo $this->plugurl; ?>ajax.php" );
+            var mysack = new sack("<?php echo admin_url( 'admin-ajax.php' ); ?>" );
             mysack.execute = 1;
             mysack.method = 'POST';
+            mysack.setVar( 'dsfaq_nonce', '<?php echo wp_create_nonce( 'dsfaq_ajax_nonce' ); ?>' );
             mysack.setVar( 'action', 'save_name_book' );
             mysack.setVar( 'id', id );
             mysack.setVar( 'name_book', dsfaq_name_book );
@@ -1181,9 +1255,10 @@ class dsfaq{
 
         function dsfaq_change_faqdisplay(id, mode){
             document.getElementById("dsfaq_display_mode_" + id).innerHTML = '<img src="<?php echo $this->plugurl; ?>img/ajax-loader.gif" />';
-            var mysack = new sack("<?php echo $this->plugurl; ?>ajax.php" );
+            var mysack = new sack("<?php echo admin_url( 'admin-ajax.php' ); ?>" );
             mysack.execute = 1;
             mysack.method = 'POST';
+            mysack.setVar( 'dsfaq_nonce', '<?php echo wp_create_nonce( 'dsfaq_ajax_nonce' ); ?>' );
             mysack.setVar( 'action', 'change_faqdisplay' );
             mysack.setVar( 'id', id );
             mysack.setVar( 'mode', mode );
@@ -1194,9 +1269,10 @@ class dsfaq{
 		// 2011.07.19: 1.0.9 (Select sort type)
         function dsfaq_change_faqdisplaysort(id, sortby){
             document.getElementById("dsfaq_display_sort_" + id).innerHTML = '<img src="<?php echo $this->plugurl; ?>img/ajax-loader.gif" />';
-            var mysack = new sack("<?php echo $this->plugurl; ?>ajax.php" );
+            var mysack = new sack("<?php echo admin_url( 'admin-ajax.php' ); ?>" );
             mysack.execute = 1;
             mysack.method = 'POST';
+            mysack.setVar( 'dsfaq_nonce', '<?php echo wp_create_nonce( 'dsfaq_ajax_nonce' ); ?>' );
             mysack.setVar( 'action', 'change_faqdisplaysort' );
             mysack.setVar( 'id', id );
             mysack.setVar( 'sort', sortby );
@@ -1207,9 +1283,10 @@ class dsfaq{
 		// 2011.07.19: 1.0.9 (Select order (sort2) type)
         function dsfaq_change_faqdisplayorder(id, order){
             document.getElementById("dsfaq_display_order_" + id).innerHTML = '<img src="<?php echo $this->plugurl; ?>img/ajax-loader.gif" />';
-            var mysack = new sack("<?php echo $this->plugurl; ?>ajax.php" );
+            var mysack = new sack("<?php echo admin_url( 'admin-ajax.php' ); ?>" );
             mysack.execute = 1;
             mysack.method = 'POST';
+            mysack.setVar( 'dsfaq_nonce', '<?php echo wp_create_nonce( 'dsfaq_ajax_nonce' ); ?>' );
             mysack.setVar( 'action', 'change_faqdisplayorder' );
             mysack.setVar( 'id', id );
             mysack.setVar( 'order', order ); // 2011.07.19: 1.0.9: for Sort2
@@ -1220,9 +1297,10 @@ class dsfaq{
 		// 2011.09.07: 1.0.13 (Visible)
         function dsfaq_faqdisplay_visible(id, visible){
             document.getElementById("dsfaq_faqdisplay_visible_" + id).innerHTML = '<img src="<?php echo $this->plugurl; ?>img/ajax-loader.gif" />';
-            var mysack = new sack("<?php echo $this->plugurl; ?>ajax.php" );
+            var mysack = new sack("<?php echo admin_url( 'admin-ajax.php' ); ?>" );
             mysack.execute = 1;
             mysack.method = 'POST';
+            mysack.setVar( 'dsfaq_nonce', '<?php echo wp_create_nonce( 'dsfaq_ajax_nonce' ); ?>' );
             mysack.setVar( 'action', 'dsfaq_faqdisplay_visible' );
             mysack.setVar( 'id', id );
             mysack.setVar( 'visible', visible );
@@ -1249,7 +1327,7 @@ echo "        </div>";
     <p><?php _e('Every FAQ book has its own <b>ID</b>.', 'wp-ds-faq-plus') ?></p>
     <p><?php _e('To have the book viewed on a page you need to write a key word and specify book ID (for example: <b>[dsfaq id=1]</b>).', 'wp-ds-faq-plus') ?></p>
     <?php // 2011.08.26 (1.0.11): Introduction of admin menu. ?>
-    <?php echo  '<p><a href="options-general.php?page=' . plugin_basename(__FILE__) .'&admin_page=1" target="_blank">' . __('Admin Settings','wp-ds-faq-plus') . '</a> ' . __('was established.','wp-ds-faq-plus') ; ?>
+    <?php echo  '<p><a href="options-general.php?page=wp-ds-faq-plus-admin" target="_blank">' . __('Admin Settings','wp-ds-faq-plus') . '</a> ' . __('was established.','wp-ds-faq-plus') ; ?>
     <?php echo  ' ' . __('For displaying the delete button, please check the settings in it.','wp-ds-faq-plus') . '</p>'; ?>
     <br>
     <p><?php _e('You can create a new FAQ book:', 'wp-ds-faq-plus') ?></p>
@@ -1281,54 +1359,61 @@ echo "        </div>";
 */
 	function convert_timezone_date($date = false, $dateformat = false){
 		// About date format, Japanese style in only Japanese language.
-		if($date == false) return "";
-		// If you use Manual offset in Timezone setting, the setting is saved to "gmt_offset".
-		$timezone_string = get_option( 'timezone_string' );		
-		$timezone_offset = get_option( 'gmt_offset' );		
-		$date_format = get_option( 'date_format' );		
-		$time_format = get_option( 'time_format' );		
-		if($dateformat == "TIME")
+		if ($date === false || $date === '') {
+			return "";
+		}
+
+		$timezone_string = get_option( 'timezone_string' );
+		$timezone_offset = get_option( 'gmt_offset' );
+		$date_format     = get_option( 'date_format' );
+		$time_format     = get_option( 'time_format' );
+
+		if ($dateformat === "TIME") {
 			$date_format = $date_format . " " . $time_format;
-		else if($dateformat != false)
+		} else if ($dateformat !== false && $dateformat !== '') {
 			$date_format = $dateformat;
-		if(empty($timezone_offset) || !is_numeric($timezone_offset)) $timezone_offset = 0;
-				
-		// PHP5.2以前ならdate_i18nを使っては見る。だがformatのTが正しく反映されないようだ（DateTimeでタイムゾーンを取得できないから）
-		if (version_compare(PHP_VERSION, '5.2.0') < 0){
-			if(function_exists('date_i18n'))
-				$d_c = date_i18n($date_format, strtotime($date));
-			else  // Maybe, WP 2.9 or older version
-				$d_c = date($date_format, strtotime($date));
-		}else{
-			$current_dt = new DateTime();  // 現在日付を取得（目的は現在のタイムゾーン設定を取得）
-			$dt = new  DateTime($date, new DateTimeZone($current_dt->format('e')));
+		}
 
-			// Timezone is appeared "UTC"....
-			if(empty($timezone_string)){
-				if(date_default_timezone_get() == "UTC"){ // In the future, wordpress may change the policy about timezone (Now, "UTC")
-					// 1.0.17: 2013.01.10 setTimestamp requires PHP version 5.3.0 or higher. (http://php.net/manual/en/datetime.gettimestamp.php)
-   				    if($timezone_offset > 0){
-       				    $dt = new DateTime($date . " +" . $timezone_offset . " hours");
-   				    }else{
-       				    $dt = new DateTime($date . " " . $timezone_offset . " hours");
-       				}
-				}else
-					$dt->setTimeZone(new DateTimeZone(date_default_timezone_get()));
-			}else
-				$dt->setTimeZone(new DateTimeZone($timezone_string));
+		if ($timezone_offset === '' || ! is_numeric($timezone_offset)) {
+			$timezone_offset = 0;
+		}
 
+		try {
+			/*
+			 * Keep backward compatibility:
+			 * this plugin stores local time in DB and should display that local time as-is.
+			 * So do not convert the saved value from UTC again here.
+			 */
+			if ( ! empty($timezone_string) ) {
+				$timezone = new DateTimeZone($timezone_string);
+			} else {
+				$offset = (float) $timezone_offset;
+				$sign   = ($offset < 0) ? '-' : '+';
+				$abs    = abs($offset);
+				$hours  = floor($abs);
+				$mins   = (int) round(($abs - $hours) * 60);
+
+				$timezone = new DateTimeZone(
+					sprintf('%s%02d:%02d', $sign, $hours, $mins)
+				);
+			}
+
+			$dt  = new DateTime($date, $timezone);
 			$d_c = $dt->format($date_format);
+
+			// Keep old correction when timezone_string is empty.
+			if ( empty($timezone_string) && ! empty($timezone_offset) && preg_match('/UTC/', $d_c) ) {
+				if ( (float) $timezone_offset > 0 ) {
+					$d_c = str_replace('UTC', 'UTC+' . $timezone_offset, $d_c);
+				} else {
+					$d_c = str_replace('UTC', 'UTC' . $timezone_offset, $d_c);
+				}
+			}
+
+			return $d_c;
+		} catch (Exception $e) {
+			return "";
 		}
-		// I want to change "UTC+9" to "Asia/Tokyo", but I seem that it's impossible.
-		// Therefore, offset data added. (In case of offset = 9, UTC+9)
-		if(!empty($timezone_offset) && preg_match("/UTC/", $d_c)){
-			if($timezone_offset > 0)
-				$d_c = str_replace("UTC", "UTC+".$timezone_offset, $d_c);
-			else
-				$d_c = str_replace("UTC", "UTC".$timezone_offset, $d_c);
-		}
-			
-		return $d_c;		
 	}
 
 	// 全体から最新の○件を返すメソッド 
@@ -1352,26 +1437,20 @@ echo "        </div>";
         $latest = (int) $latest;
         if($latest <= 0) $latest = 5;  
         $orderby = strtoupper($orderby); 
-		if($orderby != "ASC" or $orderby != "DESC") $orderby = "ASC";
-		
-		// 2011.09.14 (1.0.13) : スマートじゃないが、この時点では全データを取得しvisibleでphp側で制御（本当はsqlで制御したいが）
-//		$sql = "SELECT * FROM `".$table_name."` ORDER BY `date` DESC LIMIT ".$latest;
-		$sql = "SELECT * FROM `".esc_sql($table_name)."` ORDER BY `date` DESC";
+			$select = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM %i ORDER BY `date` DESC", $table_name ), ARRAY_A );
 
 //		$sql = "SELECT * FROM `".$table_name."` WHERE EXISTS(SELECT ".$wpdb->prefix."dsfaq_name.id,".$wpdb->prefix."dsfaq_name.visible FROM ".$wpdb->prefix."dsafaq_name WHERE ".$wpdb->prefix."dsfaq_name.visible = 1 AND ".$table_name.".id_book = ".$wpdb->prefix."dsfaq_name.id".")  ORDER BY `date` DESC LIMIT ".$latest;
 
 
-        $select = $wpdb->get_results($sql, ARRAY_A);
-
-		// 予め、$category[dsfaq_name[id]] = dsfaq_name[name_faq]; を作っておく
+			// 予め、$category[dsfaq_name[id]] = dsfaq_name[name_faq]; を作っておく
         $table_name = $wpdb->prefix."dsfaq_name";
-		$sql = "SELECT id,name_faq,visible FROM `".esc_sql($table_name)."` ";
-        $c_name = $wpdb->get_results($sql, ARRAY_A);
+        $c_name = $wpdb->get_results( $wpdb->prepare( "SELECT id,name_faq,visible FROM %i", $table_name ), ARRAY_A );
+
 		$category = array();
 		$visible_status = "";
 		if($c_name){
 			foreach($c_name as $s){
-				$category[$s['id']] = strip_tags($s['name_faq']);
+				$category[$s['id']] = wp_strip_all_tags($s['name_faq']);
 				$visible = (int) $s['visible'];
 				if($visible != 0) $visible = 1;
 				$visible_status[$s['id']] = $visible;
@@ -1417,16 +1496,16 @@ echo "        </div>";
            		if($visible_status[$s['id_book']] == 0){
            			$i--;
            			if($this->settings_editor_permission){
-//            			$results .= '<li><span style="color:gray;">'.$this->convert_timezone_date($s['date']).': '.$s['quest'].' (<strong>'.strip_tags($category[$s['id_book']]).'</strong>)</span></li>';
+//            			$results .= '<li><span style="color:gray;">'.$this->convert_timezone_date($s['date']).': '.$s['quest'].' (<strong>'.wp_strip_all_tags($category[$s['id_book']]).'</strong>)</span></li>';
 						$results .= str_replace('>', ' class="private">', $l_head); // 非公開分はグレーに
 //						$results .= $l_head;
 //						$results .= '<span style="color:gray;">';
 						$results .= $l_head_i . $this->convert_timezone_date($s['date']) .  $l_head_i_end;
 						if($latest_format == "table")
-							$results .= '<td class="category">'.strip_tags($category[$s['id_book']]).'</td>' . $l_content;
+							$results .= '<td class="category">'.wp_strip_all_tags($category[$s['id_book']]).'</td>' . $l_content;
 						else
-							$results .= $l_content . '<strong>'.strip_tags($category[$s['id_book']]).'</strong> / ';
-						$results .= strip_tags($s['quest']) . $l_content_end;
+							$results .= $l_content . '<strong>'.wp_strip_all_tags($category[$s['id_book']]).'</strong> / ';
+						$results .= wp_strip_all_tags($s['quest']) . $l_content_end;
 //           				$results .= '</span>';
            				$results .= $l_head_end . "\n";
 
@@ -1436,10 +1515,10 @@ echo "        </div>";
 					$results .= $l_head;
 					$results .= $l_head_i . $this->convert_timezone_date($s['date']) .  $l_head_i_end;
 					if($latest_format == "table")
-						$results .= '<td class="category">'.strip_tags($category[$s['id_book']]).'</td>' . $l_content;
+						$results .= '<td class="category">'.wp_strip_all_tags($category[$s['id_book']]).'</td>' . $l_content;
 					else
-						$results .= $l_content . '<strong>'.strip_tags($category[$s['id_book']]).'</strong> / ';
-					$results .= strip_tags($s['quest']) . $l_content_end;
+						$results .= $l_content . '<strong>'.wp_strip_all_tags($category[$s['id_book']]).'</strong> / ';
+					$results .= wp_strip_all_tags($s['quest']) . $l_content_end;
            			$results .= $l_head_end . "\n";
            		}
            		if($i >= $latest) break;
@@ -1476,15 +1555,13 @@ echo "        </div>";
 		else	$this->settings_editor_permission = false;
 		if( current_user_can('level_10') ) $this->settings_admin_permission = true;
 		else if( current_user_can($settings['wp_dsfaq_plus_admin_permission']) ) $this->settings_admin_permission = true;
-		else	$this->settings_admin_permission = false;
-
-        if(isset($flag) and $flag != false){ $sql = "SELECT * FROM `".esc_sql($table_name)."` WHERE `name_faq` = '".esc_sql($flag)."'"; }
+        if(isset($flag) and $flag != false){ $select = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM %i WHERE `name_faq` = %s", $table_name, $flag ), ARRAY_A ); }
 //        else                               { $sql = "SELECT * FROM `".$table_name."` ORDER BY `name_faq` ASC"; }
-        else if($id)                        { $sql = "SELECT * FROM `".esc_sql($table_name)."` WHERE `id` = '".esc_sql($id)."'"; }
-		// 2011.08.26 (1.0.11): 名前順にソート
-        else                               { $sql = "SELECT * FROM `".esc_sql($table_name)."` ORDER BY `name_faq` ASC"; }
+        else if($id)                        { $select = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM %i WHERE `id` = %d", $table_name, $id ), ARRAY_A ); }
+			// 2011.08.26 (1.0.11): 名前順にソート
+        else                               { $select = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM %i ORDER BY `name_faq` ASC", $table_name ), ARRAY_A ); }
 //        else                               { $sql = "SELECT * FROM `".$table_name."` ORDER BY `id` ASC"; }
-        $select = $wpdb->get_results($sql, ARRAY_A);
+//        else                               { $sql = "SELECT * FROM `".$table_name."` ORDER BY `id` ASC"; }
         
         if($select){
             if($raw){return $select;}
@@ -1492,7 +1569,7 @@ echo "        </div>";
             foreach ($select as $s) {           
                 $results .= '<div id="dsfaq_id_'.esc_attr($s['id']).'" class="dsfaq_curentbook"><div class="dsfaq_name_faq_book">';
                 $results .= '<table border="0" width="690"><tr><td id="dsfaq_namebook_'.esc_attr($s['id']).'">';
-                $results .= '<span class="dsfaq_title">'.strip_tags($s['name_faq']).'</span>';
+                $results .= '<span class="dsfaq_title">'.wp_strip_all_tags($s['name_faq']).'</span>';
                 $results .= '</td><td align="center" width="140" id="dsfaq_toolnamebook_'.esc_attr($s['id']).'">';
                 
          		// 2011.08.25 (1.0.11)  Limitation by current user permission 
@@ -1543,17 +1620,15 @@ echo "        </div>";
                 $results .= '</td><td width="300">';
                 $results .= '<span class="dsfaq_shortcode" id="dsfaq_display_mode_'.$s['id'].'">';
 /*
-                $results .= '<input type="radio" name="dsfaq_mode_'.esc_attr($s['id']).'" onclick="dsfaq_change_faqdisplay(\''.$s['id'].'\', \'0\');" '.(($s['mode'] == 0)?"checked":"").'> '.(($s['mode'] == 0)?"<b>":"").__('deployed', 'wp-ds-faq-plus').(($s['mode'] == 0)?"</b>":"");
+                $results .= '<input type="radio" name="dsfaq_mode_'.esc_attr($s['id']).'" onclick="dsfaq_change_faqdisplay(\''.esc_attr($s['id']).'\', \'0\');" '.(($s['mode'] == 0)?"checked":"").'> '.(($s['mode'] == 0)?"<b>":"").__('deployed', 'wp-ds-faq-plus').(($s['mode'] == 0)?"</b>":"");
                 $results .= ' &nbsp; ';
-                $results .= '<input type="radio" name="dsfaq_mode_'.esc_attr($s['id']).'" onclick="dsfaq_change_faqdisplay(\''.$s['id'].'\', \'1\');" '.(($s['mode'] == 1)?"checked":"").'> '.(($s['mode'] == 1)?"<b>":"").__('minimized', 'wp-ds-faq-plus').(($s['mode'] == 1)?"</b>":"");
+                $results .= '<input type="radio" name="dsfaq_mode_'.esc_attr($s['id']).'" onclick="dsfaq_change_faqdisplay(\''.esc_attr($s['id']).'\', \'1\');" '.(($s['mode'] == 1)?"checked":"").'> '.(($s['mode'] == 1)?"<b>":"").__('minimized', 'wp-ds-faq-plus').(($s['mode'] == 1)?"</b>":"");
 */
 
 				// 2011.07.19: 1.0.9 for sort
 				
-                $results .= '<input type="radio" name="dsfaq_mode_'.esc_attr($s['id']).'" onclick="dsfaq_change_faqdisplay(\''.$s['id'].'\', \'0\');" '.(($mode == 0)?"checked":"").'> '.(($mode == 0)?"<b>":"").__('deployed', 'wp-ds-faq-plus').(($mode == 0)?"</b>":"");
-                $results .= ' &nbsp; ';
-                $results .= '<input type="radio" name="dsfaq_mode_'.esc_attr($s['id']).'" onclick="dsfaq_change_faqdisplay(\''.$s['id'].'\', \'1\');" '.(($mode == 1)?"checked":"");
-				// 2011.08.25 (1.0.11) for Limitation by current user permission
+                $results .= '<input type="radio" name="dsfaq_mode_'.esc_attr($s['id']).'" onclick="dsfaq_change_faqdisplay(\''.esc_attr($s['id']).'\', \'0\');" '.(($mode == 0)?"checked":"").'> '.(($mode == 0)?"<b>":"").__('deployed', 'wp-ds-faq-plus').(($mode == 0)?"</b>":"");
+                $results .= '<input type="radio" name="dsfaq_mode_'.esc_attr($s['id']).'" onclick="dsfaq_change_faqdisplay(\''.esc_attr($s['id']).'\', \'1\');" '.(($mode == 1)?"checked":"");
                 if(! $this->settings_admin_permission)
                    $results .= ' disabled';
                 $results .= '> '. (($mode == 1)?"<b>":"").__('minimized', 'wp-ds-faq-plus').(($mode == 1)?"</b>":"");
@@ -1567,20 +1642,20 @@ echo "        </div>";
                 $results .= '</td><td width="300">';
 
                 $results .= '<span class="dsfaq_shortcode" id="dsfaq_display_sort_'.esc_attr($s['id']).'">';
-                $results .= '<input type="radio" name="dsfaq_sort_'.esc_attr($s['id']).'" onclick="dsfaq_change_faqdisplaysort(\''.$s['id'].'\', \'0\');" '.(($sort == 0)?"checked":"");
+                $results .= '<input type="radio" name="dsfaq_sort_'.esc_attr($s['id']).'" onclick="dsfaq_change_faqdisplaysort(\''.esc_attr($s['id']).'\', \'0\');" '.(($sort == 0)?"checked":"");
 				// 2011.08.25 (1.0.11) for Limitation by current user permission
                 if(! $this->settings_admin_permission)
                    $results .= ' disabled';
                 $results  .= '> '.(($sort == 0)?"<b>":"").__('Custom', 'wp-ds-faq-plus').(($sort == 0)?"</b>":"");
                 $results .= ' &nbsp; ';
-                $results .= '<input type="radio" name="dsfaq_sort_'.esc_attr($s['id']).'" onclick="dsfaq_change_faqdisplaysort(\''.$s['id'].'\', \'1\');" '.(($sort == 1)?"checked":"");
+                $results .= '<input type="radio" name="dsfaq_sort_'.esc_attr($s['id']).'" onclick="dsfaq_change_faqdisplaysort(\''.esc_attr($s['id']).'\', \'1\');" '.(($sort == 1)?"checked":"");
 				// 2011.08.25 (1.0.11) for Limitation by current user permission
                 if(! $this->settings_admin_permission)
                    $results .= ' disabled';
                 $results .= '> '.(($sort == 1)?"<b>":"").__('Last modified', 'wp-ds-faq-plus').(($sort == 1)?"</b>":"");
 
                 $results .= ' &nbsp; ';
-                $results .= '<input type="radio" name="dsfaq_sort_'.esc_attr($s['id']).'" onclick="dsfaq_change_faqdisplaysort(\''.$s['id'].'\', \'2\');" '.(($sort == 2)?"checked":"");
+                $results .= '<input type="radio" name="dsfaq_sort_'.esc_attr($s['id']).'" onclick="dsfaq_change_faqdisplaysort(\''.esc_attr($s['id']).'\', \'2\');" '.(($sort == 2)?"checked":"");
 				// 2011.08.25 (1.0.11) for Limitation by current user permission
                 if(! $this->settings_admin_permission)
                    $results .= ' disabled';
@@ -1636,7 +1711,9 @@ echo "        </div>";
                 
                 // 2011.07.19: 1.0.9 for sort
 //                $results .= $this->get_quest_from_faq($s['id'], false, false, false);
+                $results .= '<div id="dsfaq_quest_list_'.esc_attr($s['id']).'">';
                 $results .= $this->get_quest_from_faq($s['id'], false, false, false, $sort, $order);
+                $results .= '</div>';
                 
                 $results .= '<div id="dsfaq_add_q_'.$s['id'].'" class="dsfaq_name_faq_quest_add">';
                 $results .= '<a href="#_" onclick="add_input_quest(\'dsfaq_add_q_'.esc_attr($s['id']).'\',\''.esc_attr($s['id']).'\');" class="button">'.__('Add&nbsp;question', 'wp-ds-faq-plus').'</a>';
@@ -1681,14 +1758,13 @@ echo "        </div>";
 
 
         $table_name = $wpdb->prefix."dsfaq_quest";
-
-       if(isset($id_quest) and $id_quest != false){ $sql = "SELECT * FROM `".esc_sql($table_name)."` WHERE `id_book` = '".esc_sql($id_book)."' AND `id` = '".esc_sql($id_quest)."'"; }
-        elseif(isset($quest) and $quest != false)  { $sql = "SELECT * FROM `".esc_sql($table_name)."` WHERE `id_book` = '".esc_sql($id_book)."' AND `quest` = '".esc_sql($quest)."'"; }
+       if(isset($id_quest) and $id_quest != false){ $select = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM %i WHERE `id_book` = %d AND `id` = %d", $table_name, $id_book, $id_quest ), ARRAY_A ); }
+        elseif(isset($quest) and $quest != false)  { $select = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM %i WHERE `id_book` = %d AND `quest` = %s", $table_name, $id_book, $quest ), ARRAY_A ); }
 /*
-//       else                                       { $sql = "SELECT * FROM `".$table_name."` WHERE `id_book` = '".$id_book."' ORDER BY `sort` ASC"; }
+//       else                                       { $sql = "SELECT * FROM `".$table_name."` WHERE `id_book` = .$id_book. ORDER BY `sort` ASC"; }
 // `id` , `id_book` , `date` ,    `quest` ,           `answer` ,          `sort`  2011.03.18 By Kitani. 1.0.1
-//       else                                       { $sql = "SELECT * FROM `".$table_name."` WHERE `id_book` = '".$id_book."' ORDER BY `date` DESC"; }
-		// 2011.07.19: 1.0.9 for Sort
+//       else                                       { $sql = "SELECT * FROM `".$table_name."` WHERE `id_book` = .$id_book. ORDER BY `date` DESC"; }
+			// 2011.07.19: 1.0.9 for Sort
 */
        else{
         if(!is_numeric($sort) || $sort < 0) $sort_by = "sort";
@@ -1700,10 +1776,9 @@ echo "        </div>";
         else if($order == 1) $order_by = "DESC";
         else $order_by = "ASC"; // default
         
-//        $sql = "SELECT * FROM `".$table_name."` WHERE `id_book` = '".$id_book."' ORDER BY `".$sort_by."` DESC";
-        $sql = "SELECT * FROM `".esc_sql($table_name)."` WHERE `id_book` = '".esc_sql($id_book)."' ORDER BY `".esc_sql($sort_by)."` ".esc_sql($order_by);
+//        $sql = "SELECT * FROM `".$table_name."` WHERE `id_book` = .$id_book. ORDER BY `".$sort_by."` DESC";
+        $select = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM %i WHERE `id_book` = %d ORDER BY `{$sort_by}` {$order_by}", $table_name, $id_book ), ARRAY_A );
        }
-        $select = $wpdb->get_results($sql, ARRAY_A);
 
         if($select){
             if($raw){return $select;}
@@ -1722,7 +1797,7 @@ echo "        </div>";
 
 		// 2011.03.18 By Kitani. タイトルの先頭に（）があれば、タイトルの後ろの列に移動する（カテゴリー表示）
 		// （カテゴリ表示内の-は改行）
-		$s_q = strip_tags($s['quest']);
+		$s_q = wp_strip_all_tags($s['quest']);
 		$s_q = str_replace('(', '（', $s_q); // 何故か半角()でのpreg_matchはうまく動作しない
 		$s_q = str_replace(')', '）', $s_q);
 		$s_q = str_replace('　', '  ', $s_q); // 全角スペースもltrimされるようにする（全角スペースは２つの半角スペースに置換）
@@ -1803,6 +1878,741 @@ echo "        </div>";
         return $results;
     }
     # END get_quest_from_faq #####################################------------------------------------------------------------#    
+}
+
+
+if ( ! function_exists( 'k_escape' ) ) {
+function k_escape($str, $flag=false, $opt=false){
+  $str = stripcslashes($str);
+  $str = stripslashes($str);
+
+  if ($flag){
+    $str = esc_sql($str);
+  }
+  if ($opt){
+    $str = str_replace("\\'","\'",$str);
+  }
+
+   return $str;
+}
+}
+
+if ( ! function_exists( 'dsfaq_plus_ajax_error' ) ) {
+function dsfaq_plus_ajax_error($str=""){
+  if($str != "") {
+    die( "alert('" . esc_js( __( $str, 'wp-ds-faq-plus' ) ) . "')" );
+  } else {
+    die( "alert('" . esc_js( __('Something did not work.','wp-ds-faq-plus') ) . "')" );
+  }
+}
+}
+
+if ( ! function_exists( 'dsfaq_plus_verify_ajax_nonce' ) ) {
+function dsfaq_plus_verify_ajax_nonce( $allow_public_read = false ) {
+    $nonce = isset( $_POST['dsfaq_nonce'] ) ? sanitize_text_field( wp_unslash( $_POST['dsfaq_nonce'] ) ) : '';
+    if ( $nonce && wp_verify_nonce( $nonce, 'dsfaq_ajax_nonce' ) ) {
+        return true;
+    }
+
+    if ( $allow_public_read ) {
+        return true;
+    }
+
+    dsfaq_plus_ajax_error( 'Security check failed.' );
+}
+}
+
+
+if ( ! function_exists( 'dsfaq_plus_require_ajax_nonce' ) ) {
+function dsfaq_plus_require_ajax_nonce() {
+    if ( ! check_ajax_referer( 'dsfaq_ajax_nonce', 'dsfaq_nonce', false ) ) {
+        dsfaq_plus_ajax_error( 'Security check failed.' );
+    }
+}
+}
+
+if ( ! function_exists( 'dsfaq_plus_handle_ajax_action' ) ) {
+function dsfaq_plus_handle_ajax_action(){
+header('Content-type: text/javascript; charset=' . get_option('blog_charset'), true);
+header('Cache-control: no-cache, must-revalidate', true);
+
+if ( ! isset( $_POST['action'] ) ) {
+  dsfaq_plus_ajax_error("There is not action.");
+}
+
+$action = sanitize_key( wp_unslash( $_POST['action'] ) );
+$public_read_actions = array( 'open_quest' );
+dsfaq_plus_verify_ajax_nonce( in_array( $action, $public_read_actions, true ) );
+
+global $wpdb, $dsfaq;
+$escape      = "\\'\\\/\x08\x0C\n\r\x09";
+$table_name  = $wpdb->prefix . "dsfaq_name";
+$table_quest = $wpdb->prefix . "dsfaq_quest";
+$settings = get_option('wp_ds_faq_array');
+
+$settings_editor_permission = false;
+$settings_admin_permission = false;
+if ( isset( $settings['wp_dsfaq_plus_editor_permission'] ) && current_user_can( $settings['wp_dsfaq_plus_editor_permission'] ) ) $settings_editor_permission = true;
+if ( current_user_can('level_10') ) $settings_editor_permission = true;
+if ( isset( $settings['wp_dsfaq_plus_admin_permission'] ) && current_user_can( $settings['wp_dsfaq_plus_admin_permission'] ) ) $settings_admin_permission = true;
+if ( current_user_can('level_10') ) $settings_admin_permission = true;
+
+$read_only_actions = array( 'open_quest' );
+$editor_actions = array( 'front_edit_quest', 'front_cancel_edit', 'front_update_quest', 'delete_quest' );
+$admin_actions = array( 'add_faq','delete_faqbook','save_quest','edit_quest','update_quest','q_change','save_settings','edit_name_book','save_name_book','change_faqdisplay','change_faqdisplaysort','change_faqdisplayorder','dsfaq_faqdisplay_visible','restore_settings' );
+
+if ( in_array( $action, $editor_actions, true ) && ! $settings_editor_permission ) {
+    dsfaq_plus_ajax_error( 'You do not have permission.' );
+}
+if ( in_array( $action, $admin_actions, true ) && ! $settings_editor_permission ) {
+    dsfaq_plus_ajax_error( 'You do not have permission.' );
+}
+
+
+switch( $action ) {
+
+    case 'add_faq':
+        dsfaq_plus_require_ajax_nonce();
+        if(!isset($_POST['input_faq']) || $_POST['input_faq'] == ""){ dsfaq_plus_ajax_error("No input a FAQ name"); }
+        $input_faq = wp_strip_all_tags( wp_unslash( $_POST['input_faq'] ) );
+	   
+        // Надо будет избавиться от двух одинаковых обращений к БД. Хватит и одного.
+        if(!$dsfaq->get_faq_book($input_faq, false, false)){
+			// 2011.08.29 (1.0.12)
+           $results = $wpdb->insert( $table_name, array( 'name_faq' => $input_faq, 'mode' => 0, 'custom_mode' => 0 ), array( '%s', '%d', '%d' ) );
+            if($results){
+                $results = $dsfaq->get_faq_book(k_escape($input_faq,true,true), false, false);
+
+                $results = addcslashes($results, "\\'"); 
+                die( "document.getElementById('faqbook').innerHTML += '$results';\n
+                document.getElementById(\"s1\").innerHTML = '';" );
+            }
+        }else{
+            die( "alert('".__('The FAQ with such name already exists!', 'wp-ds-faq-plus')."');\n
+            document.getElementById(\"s1\").innerHTML = '';" );
+        }
+        break;
+
+    case 'delete_faqbook':
+        dsfaq_plus_require_ajax_nonce();
+        if(!isset($_POST['id']) || $_POST['id'] == ""){ dsfaq_plus_ajax_error("There is not id number"); }
+//        $id = $_POST['id'];
+          $id = (int) wp_unslash( $_POST['id'] ); if(!is_int($id)){ break; }   // fixed by WP DS FAQ 1.3.3 (1.0.10: 2011.08.22)
+      
+        $quest_from_faq = $dsfaq->get_quest_from_faq($id, false, false, true);
+        
+        if($quest_from_faq != false){
+            $count = count($quest_from_faq);
+            $i = 0; $wr = '';
+            foreach ($quest_from_faq as $s) {
+                $i = $i + 1;
+                if($i == $count){$or = "";}else{$or = ' OR ';}
+                $wr .= "`id` = '".k_escape($s['id'],true,false)."'".$or;
+            }
+            $results = $wpdb->delete( $table_quest, array( 'id_book' => $id ), array( '%d' ) );
+        }
+
+//        $sql = "DELETE FROM `".$table_name."` WHERE `id` = ".$id;
+        $results = $wpdb->delete( $table_name, array( 'id' => $id ), array( '%d' ) );
+        if($results){ die( "idElem = document.getElementById('dsfaq_id_".$id."');\n idElem.parentNode.removeChild(idElem);"); }
+        break;
+    
+    case 'save_quest':
+        dsfaq_plus_require_ajax_nonce();
+        if(!isset($_POST['id']) || $_POST['id'] == ""){ dsfaq_plus_ajax_error("There is not id number"); }
+//        $id = $_POST['id'];
+        $id = (int) wp_unslash( $_POST['id'] ); if(!is_int($id)){ break; }   // fixed by WP DS FAQ 1.3.3 (1.0.10: 2011.08.22)
+
+
+        if(!isset($_POST['dsfaq_quest']) || $_POST['dsfaq_quest'] == "" ){ dsfaq_plus_ajax_error("POST: dsfaq_quest error. "); }
+        $dsfaq_quest = wp_strip_all_tags( wp_unslash( $_POST['dsfaq_quest'] ) ); 
+
+        if(!isset($_POST['dsfaq_answer']) || $_POST['dsfaq_answer'] == "" ){ dsfaq_plus_ajax_error("POST: dsfaq_answer error. "); }
+        $dsfaq_answer = wp_kses_post( wp_unslash( $_POST['dsfaq_answer'] ) ); 
+        
+        $results = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM %i WHERE `id_book` = %d ORDER BY `sort` DESC LIMIT 1", $table_quest, $id ), ARRAY_A );
+        if($results){
+            foreach ($results as $s) {
+                (int)$sortnum = $s['sort']+1;
+            }
+        }else{
+            (int)$sortnum = 1;
+        }
+        
+        
+        $results = $wpdb->insert( $table_quest, array( 'id_book' => $id, 'date' => wp_date( 'Y-m-d H:i:s' ), 'quest' => $dsfaq_quest, 'answer' => $dsfaq_answer, 'sort' => $sortnum ), array( '%d', '%s', '%s', '%s', '%d' ) );
+        
+        if($results){
+            $results = $dsfaq->get_quest_from_faq($id, false, k_escape($dsfaq_quest,true,true), false);
+
+            $results = addcslashes($results, "\\'");
+            die( "idElem = document.getElementById('dsfaq_add_q_".$id."');\n
+            idElem.parentNode.removeChild(idElem);\n
+            document.getElementById('dsfaq_id_".$id."').innerHTML += '".$results."';" );
+        }        
+        break;
+
+    case 'delete_quest':
+        dsfaq_plus_require_ajax_nonce();
+        if(!isset($_POST['id']) || $_POST['id'] == ""){ dsfaq_plus_ajax_error("POST: id error in delete_quest. "); }
+//        $id = $_POST['id'];
+        $id = (int) wp_unslash( $_POST['id'] ); if(!is_int($id)){ break; }   // fixed by WP DS FAQ 1.3.3 (1.0.10: 2011.08.22)
+
+        if(isset($_POST['front'])){
+//            (int)$front = $_POST['front'];
+            $front = (int) wp_unslash( $_POST['front'] ); // fixed by WP DS FAQ 1.3.3 (1.0.10: 2011.08.22)
+
+        }
+
+//        $sql = "DELETE FROM `".$table_quest."` WHERE `id` = ".$id;
+        $results = $wpdb->delete( $table_quest, array( 'id' => $id ), array( '%d' ) );
+        
+//        if(isset($front) and $front == 1){
+        if(isset($front) and is_int($front) and $front == 1){ // fixed by WP DS FAQ 1.3.3 (1.0.10: 2011.08.22)
+            $die = "if(document.getElementById('dsfaq_qa_block_".$id."')){
+                        dsfaq_front_bg_color('dsfaq_qa_block_".$id."', function (){
+                            idElem = document.getElementById('dsfaq_qa_block_".$id."');
+                            idElem.parentNode.removeChild(idElem);
+                            idElem = document.getElementById('dsfaq_li_".$id."');
+                            idElem.parentNode.removeChild(idElem); })
+                    }else{
+                        dsfaq_front_bg_color('dsfaq_answer_".$id."', function (){ 
+                            idElem = document.getElementById('dsfaq_quest_".$id."');
+                            idElem.parentNode.removeChild(idElem);
+                            idElem = document.getElementById('dsfaq_tools_".$id."');
+                            idElem.parentNode.removeChild(idElem);
+                            idElem = document.getElementById('dsfaq_answer_".$id."');
+                            idElem.parentNode.removeChild(idElem); })
+                    }";
+        }else{
+            $die = "idElem = document.getElementById('dsfaq_idquest_".$id."');
+                    idElem.parentNode.removeChild(idElem);";
+        }
+
+        if($results){ die($die); }
+        break;
+        
+    case 'edit_quest':
+        dsfaq_plus_require_ajax_nonce();
+        if(!isset($_POST['id']) || $_POST['id'] == ""){ dsfaq_plus_ajax_error("POST: id error in edit_quest. "); }
+//        (int)$id = $_POST['id'];
+        $id = (int) wp_unslash( $_POST['id'] ); if(!is_int($id)){ break; }   // fixed by WP DS FAQ 1.3.3 (1.0.10: 2011.08.22)
+       
+        $select = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM %i WHERE `id` = %d", $table_quest, $id ), ARRAY_A );
+        
+        $results = '';
+        foreach ($select as $s) {
+            $results .= '<div id="dsfaq_idquest_edit_'.$id.'" class="dsfaq_idquest_edit">';
+            $results .= '<br>';
+            $results .= '<p>'.__('Question:', 'wp-ds-faq-plus').'</p>';
+            $results .= '<input id="dsfaq_quest" type="text" value="'.str_replace('"', '&quot;', wp_strip_all_tags($s['quest'])).'" />';
+            $results .= '<p>'.__('Answer:', 'wp-ds-faq-plus').'</p>';
+            $results .= '<textarea id="dsfaq_answer" rows="10" cols="45" name="text">'.wp_kses_post($s['answer']).'</textarea><br>';
+            $results .= '<p class="dsfaq_drv">';
+            $results .= '<a href="#_" onclick="this.innerHTML=\'<img src='.$dsfaq->plugurl.'img/ajax-loader.gif>\'; update_quest('.k_escape($s['id'],false,true).', '.esc_attr($s['id_book']).');"><span class="button">'.__('Save', 'wp-ds-faq-plus').'</span></a>';
+            $results .= ' &nbsp; ';
+            $results .= '<a href="#_" onclick="cancel_edit(\''.$id.'\', \'dsfaq_idquest_edit_'.$id.'\');" class="button">'.__('Cancel', 'wp-ds-faq-plus').'</a>';
+            $results .= '</p>';
+            $results .= '</div>';
+        }
+        
+        $results = addcslashes($results, $escape);
+        die( "document.getElementById('dsfaq_edit_link_".$id."').innerHTML = '';\n
+        document.getElementById('dsfaq_idquest_".$id."').style.backgroundColor = '#fdfdef';\n
+        document.getElementById('dsfaq_idquest_".$id."').innerHTML += '".$results."';" );
+        break;
+        
+    case 'front_edit_quest':
+        dsfaq_plus_require_ajax_nonce();
+        if(!isset($_POST['id']) || $_POST['id'] == "" ){ dsfaq_plus_ajax_error("POST: id error in front_edit_quest. "); }
+//        (int)$id = $_POST['id'];
+        $id = (int) wp_unslash( $_POST['id'] ); if(!is_int($id)){ break; }   // fixed by WP DS FAQ 1.3.3 (1.0.10: 2011.08.22)
+      
+        $select = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM %i WHERE `id` = %d", $table_quest, $id ), ARRAY_A );
+
+        foreach ($select as $s) {          
+            $front_input_quest = '<input style="width: 100%;" id="dsfaq_inp_quest_'.$id.'" type="text" value="'.str_replace('"', '&quot;', wp_strip_all_tags($s['quest'])).'" />';
+            $front_textarea_answer = '<textarea style="width: 100%;" id="dsfaq_txt_answer_'.$id.'" rows="10" cols="45">'.wp_kses_post($s['answer']).'</textarea>';
+            $front_tools  = '[ <a href="#_" onclick="this.innerHTML=\'<img src='.$dsfaq->plugurl.'img/ajax-loader.gif>\'; dsfaq_front_update_quest('.k_escape($s['id'],false,true).');">'.__('Save', 'wp-ds-faq-plus').'</a> ]';
+            $front_tools .= '[ <a href="#_" onclick="dsfaq_front_cancel_edit(\''.$id.'\');">'.__('Cancel', 'wp-ds-faq-plus').'</a> ]';
+        }
+        
+        $front_input_quest     = addcslashes($front_input_quest, $escape);
+        $front_textarea_answer = addcslashes($front_textarea_answer, $escape);
+        $front_tools           = addcslashes($front_tools, $escape);
+      
+        die( "document.getElementById('dsfaq_quest_".$id."').innerHTML = '".$front_input_quest."';\n
+        document.getElementById('dsfaq_answer_".$id."').innerHTML = '".$front_textarea_answer."';\n
+        document.getElementById('dsfaq_tools_".$id."').innerHTML = '".$front_tools."';" );
+        break;
+        
+    case 'front_cancel_edit':
+        dsfaq_plus_require_ajax_nonce();
+        if(!isset($_POST['id']) || $_POST['id'] == ""){ dsfaq_plus_ajax_error("POST: id error in front_cancel_edit. "); }
+//        (int)$id = $_POST['id'];
+        $id = (int) wp_unslash( $_POST['id'] ); if(!is_int($id)){ break; }   // fixed by WP DS FAQ 1.3.3 (1.0.10: 2011.08.22)
+      
+        $select = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM %i WHERE `id` = %d", $table_quest, $id ), ARRAY_A );
+        
+        $results = '';
+        foreach ($select as $s) {
+            $front_input_quest = wp_strip_all_tags($s['quest']);
+            $front_textarea_answer = '<div class="dsfaq_answer">'.wp_kses_post($s['answer']);
+			// 2011.08.25 (1.0.11) Limitation by settings and current user permission
+//            if(current_user_can('level_10')){
+			if($settings_editor_permission){
+                $front_tools  = '[ <a href="#_" onclick="dsfaq_front_edit_quest('.k_escape($s['id'],false,true).');">'.__('Edit', 'wp-ds-faq-plus').'</a> ]';
+//	2011.08.22: 1.0.10: ログイン時のFAQ表示ページにおいて、「編集」→「キャンセル」を押した後に「削除」になる問題を修正（管理画面以外での削除を禁止するという1.0.3のポリシーに準拠）
+
+				// 2011.08.25 (1.0.11) Limitation by settings and current user permission
+				if(! $settings['wp_dsfaq_plus_disable_all_delete'] && ! $settings['wp_dsfaq_plus_disable_frontedit_delete']){	
+             	   $front_tools .= '[ <a href="#_" onclick="this.innerHTML=\'<img src='.$dsfaq->plugurl.'img/ajax-loader.gif>\'; dsfaq_front_delete_quest('.k_escape($s['id'],false,true).');">'.__('Delete&nbsp;question', 'wp-ds-faq-plus').'</a> ]';             	   
+          		}else if($settings_admin_permission && !$settings['wp_dsfaq_plus_apply_safetyoptions_to_admin']){
+             	   $front_tools .= '[ <a href="#_" onclick="this.innerHTML=\'<img src='.$dsfaq->plugurl.'img/ajax-loader.gif>\'; dsfaq_front_delete_quest('.k_escape($s['id'],false,true).');">'.__('Delete&nbsp;question', 'wp-ds-faq-plus').'</a> ]';             	   
+				}          		
+          	}
+        }
+        $front_input_quest     = addcslashes($front_input_quest, $escape);
+        $front_textarea_answer = addcslashes($front_textarea_answer, $escape);
+        $front_tools           = addcslashes($front_tools, $escape);
+        die( "if(document.getElementById('dsfaq_qa_block_".$id."')){
+                  document.getElementById('dsfaq_quest_".$id."').innerHTML = '".$front_input_quest."';\n
+                  document.getElementById('dsfaq_answer_".$id."').innerHTML = '".$front_textarea_answer."</div>';\n
+              }else{
+                  document.getElementById('dsfaq_quest_".$id."').innerHTML = '<a href=\"#_\" onclick=\"dsfaq_open_quest(".$id.");\">".$front_input_quest."</a>';\n
+                  document.getElementById('dsfaq_answer_".$id."').innerHTML = '".$front_textarea_answer."<br><span class=\"dsfaq_tools\">[&nbsp;<a href=\"#_\" onclick=\"dsfaq_close_quest(".$id.");\">".__('Close', 'wp-ds-faq-plus')."</a>&nbsp;]</span></div>';\n
+              }
+        document.getElementById('dsfaq_tools_".$id."').innerHTML = '".$front_tools."';" );
+        break;
+
+    case 'update_quest':
+        dsfaq_plus_require_ajax_nonce();
+        if(!isset($_POST['id']) || $_POST['id'] == ""){ dsfaq_plus_ajax_error("POST: id error in update_quest. "); }
+//        $id = $_POST['id'];
+        $id = (int) wp_unslash( $_POST['id'] ); if(!is_int($id)){ break; }   // fixed by WP DS FAQ 1.3.3 (1.0.10: 2011.08.22)
+        
+        if(!isset($_POST['id_book']) || $_POST['id_book'] == ""){ dsfaq_plus_ajax_error("POST: id_book error in update_quest. "); }
+//        $id_book = $_POST['id_book'];
+        $id_book = (int) wp_unslash( $_POST['id_book'] ); if(!is_int($id_book)){ break; }  // fixed by WP DS FAQ 1.3.3 (1.0.10: 2011.08.22)
+        
+        if(!isset($_POST['dsfaq_quest']) || $_POST['dsfaq_quest'] == ""){ dsfaq_plus_ajax_error("POST: dsfaq_quest error in update_quest. "); }
+        $dsfaq_quest = wp_strip_all_tags( wp_unslash( $_POST['dsfaq_quest'] ) );
+
+        if(!isset($_POST['dsfaq_answer']) || $_POST['dsfaq_answer'] == ""){ dsfaq_plus_ajax_error("POST: dsfaq_answer error in update_quest. "); }
+        $dsfaq_answer = wp_kses_post( wp_unslash( $_POST['dsfaq_answer'] ) );
+        
+        $results = $wpdb->update( $table_quest, array( 'quest' => $dsfaq_quest, 'answer' => $dsfaq_answer ), array( 'id' => $id ), array( '%s', '%s' ), array( '%d' ) );
+
+        if($results){
+            $res = $dsfaq->get_quest_from_faq(k_escape($id_book,true,true), $id, false, true);
+
+            $results = '';
+            
+           foreach ($res as $s) {
+                $results .= '<table border="0" width="690"><tr><td width="12">';
+                $results .= '<a href="#_" onclick="dsfaq_q_change(\'up\', \''.k_escape($s['id_book'],false,true).'\', \''.k_escape($s['id'],false,true).'\');"><img src="'.$dsfaq->plugurl.'img/up.gif" width="8" height="8"></a>';
+                $results .= '<br><img src="'.$dsfaq->plugurl.'img/1x1.gif" width="1" height="6"><br>';
+                $results .= '<a href="#_" onclick="dsfaq_q_change(\'down\', \''.k_escape($s['id_book'],false,true).'\', \''.k_escape($s['id'],false,true).'\');"><img src="'.$dsfaq->plugurl.'img/down.gif" width="8" height="8"></a>';
+                $results .= '</td>';
+                $results .= '<td>';
+                $results .= wp_strip_all_tags($s['quest']);
+                $results .= '</td><td width="120" align="center" id="dsfaq_edit_link_'.k_escape($s['id'],false,true).'">';
+                $results .= '<a href="#_" onclick="this.innerHTML=\'<img src='.$dsfaq->plugurl.'img/ajax-loader.gif>\'; edit_quest('.k_escape($s['id'],false,true).');"><span class="button">'.__('Edit', 'wp-ds-faq-plus').'</span></a>';
+                $results .= '</td><td width="120" align="center">';
+                $results .= '<a href="#_" onclick="this.innerHTML=\'<img src='.$dsfaq->plugurl.'img/ajax-loader.gif>\'; delete_quest('.k_escape($s['id'],false,true).');"><span class="button">'.__('Delete&nbsp;question', 'wp-ds-faq-plus').'</span></a>';
+                $results .= '</td></tr></table>';
+            }
+
+            $results = addcslashes($results, "\\'");
+            die( "idElem = document.getElementById('dsfaq_idquest_edit_".$id."');\n
+            idElem.parentNode.removeChild(idElem);\n
+            document.getElementById('dsfaq_idquest_".$id."').style.backgroundColor = '#FFFFFF';\n
+            document.getElementById('dsfaq_idquest_".$id."').innerHTML = '".$results."';" );
+        }        
+        
+        break;
+        
+    case 'front_update_quest':
+        dsfaq_plus_require_ajax_nonce();
+        if(!isset($_POST['id']) || $_POST['id'] == ""){ dsfaq_plus_ajax_error("POST: id error in front_update_quest. "); }
+//        $id = $_POST['id'];
+        $id = (int) wp_unslash( $_POST['id'] ); if(!is_int($id)){ break; }   // fixed by WP DS FAQ 1.3.3 (1.0.10: 2011.08.22)
+      
+        if(!isset($_POST['dsfaq_quest']) || $_POST['dsfaq_quest'] == ""){ dsfaq_plus_ajax_error("POST: dsfaq_quest error in front_update_quest. "); }
+        $dsfaq_quest = wp_strip_all_tags( wp_unslash( $_POST['dsfaq_quest'] ) );
+
+        if(!isset($_POST['dsfaq_answer']) || $_POST['dsfaq_answer'] == "") dsfaq_plus_ajax_error("POST: dsfaq_answer error in front_update_quest. ");
+        $dsfaq_answer = wp_kses_post( wp_unslash( $_POST['dsfaq_answer'] ) );
+        
+        $results = $wpdb->update( $table_quest, array( 'quest' => $dsfaq_quest, 'answer' => $dsfaq_answer ), array( 'id' => $id ), array( '%s', '%s' ), array( '%d' ) );
+        
+        if($results){
+            $select = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM %i WHERE `id` = %d", $table_quest, $id ), ARRAY_A );
+            
+            $results = '';
+            foreach ($select as $s) {
+                $front_input_quest = wp_strip_all_tags($s['quest']);
+                $front_textarea_answer = '<div class="dsfaq_answer">'.wp_kses_post($s['answer']);
+			// 2011.08.25 (1.0.11) Limitation by settings and current user permission
+//            if(current_user_can('level_10')){
+				if($settings_editor_permission){
+                    $front_tools  = '[ <a href="#_" onclick="dsfaq_front_edit_quest('.k_escape($s['id'],false,true).');">'.__('Edit', 'wp-ds-faq-plus').'</a> ]';
+				// 2011.08.25 (1.0.11) Limitation by settings and current user permission
+					if(! $settings['wp_dsfaq_plus_disable_all_delete'] && ! $settings['wp_dsfaq_plus_disable_frontedit_delete']){
+                   		$front_tools .= '[ <a href="#_" onclick="this.innerHTML=\'<img src='.$dsfaq->plugurl.'img/ajax-loader.gif>\'; dsfaq_front_delete_quest('.k_escape($s['id'],false,true).');">'.__('Delete&nbsp;question', 'wp-ds-faq-plus').'</a> ]';
+               		}else if($settings_admin_permission && ! $settings['wp_dsfaq_plus_apply_safetyoptions_to_admin']){
+                   		$front_tools .= '[ <a href="#_" onclick="this.innerHTML=\'<img src='.$dsfaq->plugurl.'img/ajax-loader.gif>\'; dsfaq_front_delete_quest('.k_escape($s['id'],false,true).');">'.__('Delete&nbsp;question', 'wp-ds-faq-plus').'</a> ]';
+               		}
+               	}
+            }
+        
+            $front_input_quest     = addcslashes($front_input_quest, $escape);
+            $front_textarea_answer = addcslashes($front_textarea_answer, $escape);
+            $front_tools           = addcslashes($front_tools, $escape);
+            die( "if(document.getElementById('dsfaq_qa_block_".$id."')){
+                  document.getElementById('dsfaq_quest_".$id."').innerHTML = '".$front_input_quest."';\n
+                  document.getElementById('dsfaq_answer_".$id."').innerHTML = '".$front_textarea_answer."</div>';\n
+                  document.getElementById('dsfaq_li_".$id."').innerHTML = '<a href=\"#".$id."\">".$front_input_quest."</a>';
+           }else{
+                  document.getElementById('dsfaq_quest_".$id."').innerHTML = '<a href=\"#_\" onclick=\"dsfaq_open_quest(".$id.");\">".$front_input_quest."</a>';\n
+                  document.getElementById('dsfaq_answer_".$id."').innerHTML = '".$front_textarea_answer."<br><span class=\"dsfaq_tools\">[&nbsp;<a href=\"#_\" onclick=\"dsfaq_close_quest(".$id.");\">".__('Close', 'wp-ds-faq-plus')."</a>&nbsp;]</span></div>';\n
+              }
+            document.getElementById('dsfaq_tools_".$id."').innerHTML = '".$front_tools."';" );
+        }        
+        
+        break;
+    
+    case 'q_change':
+        dsfaq_plus_require_ajax_nonce();
+        if(!isset($_POST['to']) || $_POST['to'] == ""){ dsfaq_plus_ajax_error("POST: to error in q_change. "); }
+        $to = sanitize_key( wp_unslash( $_POST['to'] ) );
+        if(!isset($_POST['id_book']) || $_POST['id_book'] == ""){ dsfaq_plus_ajax_error("POST: id_book error in q_change. "); }
+//      $id_book = $_POST['id_book'];
+        $id_book = (int) wp_unslash( $_POST['id_book'] ); if(!is_int($id_book)){ break; }  // fixed by WP DS FAQ 1.3.3 (1.0.10: 2011.08.22)
+        if(!isset($_POST['id']) || $_POST['id'] == ""){ dsfaq_plus_ajax_error("POST: id error in q_change. "); }
+//        $id = $_POST['id'];
+        $id = (int) wp_unslash( $_POST['id'] ); if(!is_int($id)){ break; }   // fixed by WP DS FAQ 1.3.3 (1.0.10: 2011.08.22)
+        
+        $sort = (int) $wpdb->get_var( $wpdb->prepare( "SELECT `sort` FROM %i WHERE `id` = %d", $table_quest, $id ) );
+        
+        if($to == "up"){  $results = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM %i WHERE `id_book` = %d AND `sort` < %d ORDER BY `sort` DESC LIMIT 1", $table_quest, $id_book, $sort ), ARRAY_A );}
+        if($to == "down"){$results = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM %i WHERE `id_book` = %d AND `sort` > %d ORDER BY `sort` ASC LIMIT 1", $table_quest, $id_book, $sort ), ARRAY_A );}
+        
+        if($results){
+            $q_id_curent   = $id;
+            $q_sort_curent = $sort;
+            $q_id_change   = (int) $results['0']['id'];
+            $q_sort_change = (int) $results['0']['sort'];
+            
+            $results = $wpdb->update( $table_quest, array( 'sort' => $q_sort_change ), array( 'id' => $q_id_curent ), array( '%d' ), array( '%d' ) );
+            $results = $wpdb->update( $table_quest, array( 'sort' => $q_sort_curent ), array( 'id' => $q_id_change ), array( '%d' ), array( '%d' ) );
+            
+            if($to == 'up'){
+                die( "da = document.getElementById('dsfaq_idquest_".$q_id_curent."');\n
+                db = document.getElementById('dsfaq_idquest_".$q_id_change."');\n
+                da.parentNode.insertBefore(da, db);\n
+                dsfaq_bg_color ('dsfaq_idquest_".$q_id_curent."', 'dsfaq_idquest_".$q_id_change."');" );
+            }
+            else if($to == 'down'){
+                die( "da = document.getElementById('dsfaq_idquest_".$q_id_curent."');\n
+                db = document.getElementById('dsfaq_idquest_".$q_id_change."');\n
+                db.parentNode.insertBefore(db, da);\n
+                dsfaq_bg_color ('dsfaq_idquest_".$q_id_curent."', 'dsfaq_idquest_".$q_id_change."');" );
+            }
+            
+        }else{
+            die("dsfaq_nahStep('dsfaq_idquest_".$id."');");
+        }
+        break;
+        
+    case 'save_settings':
+        dsfaq_plus_require_ajax_nonce();
+        if(!isset($_POST['dsfaq_h1']) || $_POST['dsfaq_h1'] == ""){ dsfaq_plus_ajax_error("POST: dsfaq_h1 error in save_settings. "); }
+        $dsfaq_h1 = sanitize_text_field( wp_unslash( $_POST['dsfaq_h1'] ) );
+        
+        if(!isset($_POST['dsfaq_h2']) || $_POST['dsfaq_h2'] == ""){ dsfaq_plus_ajax_error("POST: dsfaq_h2 error in save_settings. "); }
+        $dsfaq_h2 = sanitize_text_field( wp_unslash( $_POST['dsfaq_h2'] ) ); 
+        
+        if(!isset($_POST['dsfaq_css']) || $_POST['dsfaq_css'] == ""){ dsfaq_plus_ajax_error("POST: dsfaq_css error in save_settings. "); }
+        $dsfaq_css = wp_kses_post( wp_unslash( $_POST['dsfaq_css'] ) );
+        
+        if(!isset($_POST['dsfaq_copyr']) || $_POST['dsfaq_copyr'] == ""){ dsfaq_plus_ajax_error("POST: dsfaq_copyr error in save_settings. "); }
+        $dsfaq_copyr = sanitize_text_field( wp_unslash( $_POST['dsfaq_copyr'] ) );
+        
+        if($dsfaq_copyr == 'true'){
+            $wp_ds_faq_array['wp_ds_faq_showcopyright'] = true;
+        }else{
+            $wp_ds_faq_array['wp_ds_faq_showcopyright'] = false;
+        }
+        $wp_ds_faq_array['wp_ds_faq_h1']  = $dsfaq_h1;
+        $wp_ds_faq_array['wp_ds_faq_h2']  = $dsfaq_h2;
+
+        $wp_ds_faq_array['wp_ds_faq_css'] = $dsfaq_css;
+        
+        update_option('wp_ds_faq_array', $wp_ds_faq_array);
+
+        die("document.getElementById('dsfaq_progress').innerHTML = '<span style=\'color:green;\'>".__('Settings&nbsp;have&nbsp;been&nbsp;saved:', 'wp-ds-faq-plus')."&nbsp;".wp_date("Y-m-d H:i:s")."</span>';");
+        
+        break;
+    
+    case 'edit_name_book':
+        dsfaq_plus_require_ajax_nonce();
+        if(!isset($_POST['id']) || $_POST['id'] == ""){ dsfaq_plus_ajax_error("POST: id error in edit_name_book. "); }
+//        $id = $_POST['id'];
+        $id = (int) wp_unslash( $_POST['id'] ); if(!is_int($id)){ break; }   // fixed by WP DS FAQ 1.3.3 (1.0.10: 2011.08.22)
+        
+        $select = $dsfaq->get_faq_book(false, $id, true);
+        
+        $name_faq = wp_strip_all_tags($select[0]['name_faq']);
+        $name_faq = addcslashes($name_faq, $escape);
+        $name_faq = str_replace('"', '&quot;', $name_faq);
+	            
+        die("document.getElementById('dsfaq_namebook_".$id."').innerHTML = '<input style=\"width:415px;\" id=\"dsfaq_input_bookname_".$id."\" value=\"".$name_faq."\"/>';\n
+        document.getElementById('dsfaq_toolnamebook_".$id."').innerHTML = '<a href=\"#_\" onclick=\"this.innerHTML=\'<img src=".$dsfaq->plugurl."img/ajax-loader.gif>\'; dsfaq_save_name_book(".$id.");\"><span class=\"button\">".__('Save', 'wp-ds-faq-plus')."</span></a>';");
+        
+        break;
+        
+    case 'save_name_book':
+        dsfaq_plus_require_ajax_nonce();
+        if(!isset($_POST['id']) || $_POST['id'] == ""){ dsfaq_plus_ajax_error("POST: id error in save_name_book. "); }
+//        $id = $_POST['id'];
+        $id = (int) wp_unslash( $_POST['id'] ); if(!is_int($id)){ break; }   // fixed by WP DS FAQ 1.3.3 (1.0.10: 2011.08.22)
+
+        if(!isset($_POST['name_book']) || $_POST['name_book'] == ""){ dsfaq_plus_ajax_error("POST: name_book error in save_name_book. "); }
+        $name_book = wp_strip_all_tags( wp_unslash( $_POST['name_book'] ) );
+        
+        $results = $wpdb->update( $table_name, array( 'name_faq' => $name_book ), array( 'id' => $id ), array( '%s' ), array( '%d' ) );
+        
+        die("document.getElementById('dsfaq_namebook_".$id."').innerHTML = '<span class=\"dsfaq_title\">".k_escape($name_book,false,true)."</span>';\n
+        document.getElementById('dsfaq_toolnamebook_".$id."').innerHTML = '<a href=\"#_\" onclick=\"this.innerHTML=\'<img src=".$dsfaq->plugurl."img/ajax-loader.gif>\'; dsfaq_edit_name_book(".$id.");\"><span class=\"button\">".__('Change&nbsp;title', 'wp-ds-faq-plus')."</span></a>';");
+        
+        break;
+        
+    case 'change_faqdisplay':
+        dsfaq_plus_require_ajax_nonce();
+        if(!isset($_POST['id']) || $_POST['id'] == ""){ dsfaq_plus_ajax_error("POST: id error in change_faqdisplay. "); }
+//        $id = $_POST['id'];
+        $id = (int) wp_unslash( $_POST['id'] ); if(!is_int($id)){ break; }   // fixed by WP DS FAQ 1.3.3 (1.0.12: 2011.08.29)
+
+        if(!isset($_POST['mode']) || $_POST['mode'] === ""){ dsfaq_plus_ajax_error("POST: mode error in change_faqdisplay. " ); }
+//        $mode = $_POST['mode'];
+        $mode = (int) wp_unslash( $_POST['mode'] ); if(!is_int($mode)){ break; }   // fixed by WP DS FAQ 1.3.3 (1.0.10: 2011.08.22)
+
+        // 2011.07.19: 1.0.9 for security
+        if(!is_numeric($mode) || $mode < 0) $mode = 0;      
+
+		// 2011.07.19: 1.0.9: modeをDBから取得
+        $result = $wpdb->get_row( $wpdb->prepare( "SELECT * FROM %i WHERE `id` = %d", $table_name, $id ) );
+        if(isset($result->custom_mode)) // 一つしか人しないはず。一つ目からmodeを取り出す
+            $set_mode = $result->custom_mode;
+        else $set_mode = 0;
+        if(!is_numeric($set_mode) || $set_mode < 0) $set_mode = 0;
+        unset($result); // 取得したDBデータの破棄
+             
+        // 2011.07.19: 1.0.9: DBのmodeからsort, orderを分離   
+	    $sort = (($set_mode - ($set_mode % 10)) / 10) % 10; 
+	    if($set_mode >= 100) // 2011.08.29 (1.0.12) fix
+	       $order = (( $set_mode - ($sort * 10) - ($set_mode % 10) ) / 100 ) % 100;
+	    else $order = 0;
+              
+        $mode_with_sort = $mode + $sort*10 + $order*100;
+
+		// 2011.08.29 (1.0.12)        
+        $results = $wpdb->update( $table_name, array( 'mode' => $mode, 'custom_mode' => $mode_with_sort ), array( 'id' => $id ), array( '%d', '%d' ), array( '%d' ) );
+
+        k_escape($id, false, true);
+        k_escape($mode, false, true);
+
+        if($results){
+            $results = '';
+            $results .= '<input type="radio" name="dsfaq_mode_'.$id.'" onclick="dsfaq_change_faqdisplay(\''.$id.'\', \'0\');" '.(($mode == 0)?"checked":"").'> '.(($mode == 0)?"<b>":"").__('deployed', 'wp-ds-faq-plus').(($mode == 0)?"</b>":"");
+            $results .= ' &nbsp; ';
+            $results .= '<input type="radio" name="dsfaq_mode_'.$id.'" onclick="dsfaq_change_faqdisplay(\''.$id.'\', \'1\');" '.(($mode == 1)?"checked":"").'> '.(($mode == 1)?"<b>":"").__('minimized', 'wp-ds-faq-plus').(($mode == 1)?"</b>":"");
+        }
+        
+        $results = addcslashes($results, $escape);
+        die("document.getElementById('dsfaq_display_mode_".$id."').innerHTML = '".$results."';");
+        break;
+        
+    case 'change_faqdisplaysort':
+        dsfaq_plus_require_ajax_nonce();
+// 2011.07.19: 1.0.9 for Sort
+
+        if(!isset($_POST['id']) || $_POST['id'] == ""){ dsfaq_plus_ajax_error("There is not id number"); }
+//        $id = $_POST['id'];
+        $id = (int) wp_unslash( $_POST['id'] ); if(!is_int($id)){ break; }   // fixed by WP DS FAQ 1.3.3 (1.0.10: 2011.08.22)
+
+        if(!isset($_POST['sort']) || $_POST['sort'] === ""){ dsfaq_plus_ajax_error("Not setting of sort"); }
+        $sort = (int) wp_unslash( $_POST['sort'] );
+
+        // 2011.07.19: 1.0.9 for security
+        if(!is_numeric($sort) || $sort < 0) $sort = 0;
+
+        // 2011.07.19: 1.0.9: modeをDBから取得
+        $result = $wpdb->get_row( $wpdb->prepare( "SELECT * FROM %i WHERE `id` = %d", $table_name, $id ) );
+        if(isset($result->custom_mode)) // 一つしか人しないはず。一つ目からmodeを取り出す
+            $set_mode = $result->custom_mode;
+        else $set_mode = 0;
+        if(!is_numeric($set_mode) || $set_mode < 0) $set_mode = 0;
+        unset($result); // 取得したDBデータの破棄
+
+        // 2011.07.19: 1.0.9: DBのmodeからmode, orderを分離
+        $mode = $set_mode % 10;
+        $set_sort = (($set_mode - ($set_mode % 10)) / 10) % 10;
+        if($set_mode >= 100) // 2011.08.29 (1.0.12) fix
+           $order = (( $set_mode - ($set_sort * 10) - $mode ) / 100 ) % 100;
+        else $order = 0;
+
+        $mode_with_sort = $mode + $sort*10 + $order*100;
+
+        // 2011.08.29 (1.0.12)
+        $results = $wpdb->update( $table_name, array( 'mode' => $mode, 'custom_mode' => $mode_with_sort ), array( 'id' => $id ), array( '%d', '%d' ), array( '%d' ) );
+
+        k_escape($id, false, true);
+        k_escape($sort, false, true);
+
+        if($results !== false){
+            $results = '';
+            $results .= '<input type="radio" name="dsfaq_sort_'.$id.'" onclick="dsfaq_change_faqdisplaysort(\''.$id.'\', \'0\');" '.(($sort == 0)?"checked":"").'> '.(($sort == 0)?"<b>":"").__('Custom', 'wp-ds-faq-plus').(($sort == 0)?"</b>":"");
+            $results .= ' &nbsp; ';
+            $results .= '<input type="radio" name="dsfaq_sort_'.$id.'" onclick="dsfaq_change_faqdisplaysort(\''.$id.'\', \'1\');" '.(($sort == 1)?"checked":"").'> '.(($sort == 1)?"<b>":"").__('Last modified', 'wp-ds-faq-plus').(($sort == 1)?"</b>":"");
+            $results .= ' &nbsp; ';
+            $results .= '<input type="radio" name="dsfaq_sort_'.$id.'" onclick="dsfaq_change_faqdisplaysort(\''.$id.'\', \'2\');" '.(($sort == 2)?"checked":"").'> '.(($sort == 2)?"<b>":"").__('Answer Name', 'wp-ds-faq-plus').(($sort == 2)?"</b>":"");
+        }
+
+        $quest_results = $dsfaq->get_quest_from_faq($id, false, false, false, $sort, $order);
+        $results = addcslashes($results, $escape);
+        $quest_results = addcslashes($quest_results, $escape);
+        die("document.getElementById('dsfaq_display_sort_".$id."').innerHTML = '".$results."';document.getElementById('dsfaq_quest_list_".$id."').innerHTML = '".$quest_results."';");
+        break;
+
+    case 'change_faqdisplayorder':
+        dsfaq_plus_require_ajax_nonce();
+// 2011.07.19: 1.0.9 for Sort2
+
+        if(!isset($_POST['id']) || $_POST['id'] == ""){ dsfaq_plus_ajax_error("There is not id number"); }
+//        $id = $_POST['id'];
+        $id = (int) wp_unslash( $_POST['id'] ); if(!is_int($id)){ break; }   // fixed by WP DS FAQ 1.3.3 (1.0.10: 2011.08.22)
+
+        if(!isset($_POST['order']) || $_POST['order'] === ""){ dsfaq_plus_ajax_error("Not setting of order"); }
+        $order = (int) wp_unslash( $_POST['order'] );
+
+        // 2011.07.19: 1.0.9 for security
+        if(!is_numeric($order) || $order < 0) $order = 0;      
+
+		// 2011.07.19: 1.0.9: modeをDBから取得
+        $result = $wpdb->get_row( $wpdb->prepare( "SELECT * FROM %i WHERE `id` = %d", $table_name, $id ) );
+        if(isset($result->custom_mode)) // 一つしか人しないはず。一つ目からmodeを取り出す
+            $set_mode = $result->custom_mode;		
+        else $set_mode = 0;
+        if(!is_numeric($set_mode) || $set_mode < 0) $set_mode = 0;
+        unset($result); // 取得したDBデータの破棄
+     
+        // 2011.07.19: 1.0.9: DBのmodeからmode, orderを分離   
+	    $mode = $set_mode % 10;
+	    $sort = (($set_mode - $mode) / 10) % 10; 
+      
+        $mode_with_sort = $mode + $sort*10 + $order*100;
+		
+		// 2011.0.29 (1.0.12) 
+        $results = $wpdb->update( $table_name, array( 'mode' => $mode, 'custom_mode' => $mode_with_sort ), array( 'id' => $id ), array( '%d', '%d' ), array( '%d' ) );
+
+        k_escape($id, false, true);
+        k_escape($sort, false, true);
+        
+        if($results !== false){
+            $results = '';
+            $results .= '<input type="radio" name="dsfaq_order_'.$id.'" onclick="dsfaq_change_faqdisplayorder(\''.$id.'\', \'0\');" '.(($order == 0)?"checked":"").'> '.(($order == 0)?"<b>":"").__('Ascending', 'wp-ds-faq-plus').(($order == 0)?"</b>":"");
+            $results .= ' &nbsp; ';
+            $results .= '<input type="radio" name="dsfaq_order_'.$id.'" onclick="dsfaq_change_faqdisplayorder(\''.$id.'\', \'1\');" '.(($order == 1)?"checked":"").'> '.(($order == 1)?"<b>":"").__('Descending', 'wp-ds-faq-plus').(($order == 1)?"</b>":"");
+        }
+
+        $quest_results = $dsfaq->get_quest_from_faq($id, false, false, false, $sort, $order);
+        $results = addcslashes($results, $escape);
+        $quest_results = addcslashes($quest_results, $escape);
+        die("document.getElementById('dsfaq_display_order_".$id."').innerHTML = '".$results."';document.getElementById('dsfaq_quest_list_".$id."').innerHTML = '".$quest_results."';");
+        break;
+
+    case 'dsfaq_faqdisplay_visible':
+        dsfaq_plus_require_ajax_nonce();
+// 2011.09.07: 1.0.13 for visible
+
+        if(!isset($_POST['id']) || $_POST['id'] == ""){ dsfaq_plus_ajax_error("There is not id number"); }
+        $id = (int) wp_unslash( $_POST['id'] ); if(!is_int($id)){ break; }   
+
+        if(!isset($_POST['visible']) || $_POST['visible'] === ""){ dsfaq_plus_ajax_error("Not setting of visible"); }
+        $visible = (int) wp_unslash( $_POST['visible'] ); 
+        if($visible != 0) $visible = 1;
+
+        $results = $wpdb->update( $table_name, array( 'visible' => $visible ), array( 'id' => $id ), array( '%d' ), array( '%d' ) );
+
+        if($results){
+            $results = '';
+            $results .= '<input type="radio" name="dsfaq_faqdisplay_visible_'.$id.'" onclick="dsfaq_faqdisplay_visible(\''.$id.'\', \'1\');" '.(($visible == 1)?"checked":"").'> '.(($visible == 1)?"<b>":"").__('Publish', 'wp-ds-faq-plus').(($visible == 1)?"</b>":"");
+            $results .= ' &nbsp; ';
+            $results .= '<input type="radio" name="dsfaq_faqdisplay_visible_'.$id.'" onclick="dsfaq_faqdisplay_visible(\''.$id.'\', \'0\');" '.(($visible == 0)?"checked":"").'> '.(($visible == 0)?"<b>":"").__('Not publish', 'wp-ds-faq-plus').(($visible == 0)?"</b>":"");
+        }
+                
+        $results = addcslashes($results, $escape);
+        die("document.getElementById('dsfaq_faqdisplay_visible_".$id."').innerHTML = '".$results."';");
+        break;
+
+
+    case 'open_quest':
+        if(!isset($_POST['id']) || $_POST['id'] == ""){ dsfaq_plus_ajax_error("POST: id error in open_quest. ");; }
+//        $id = $_POST['id'];
+        $id = (int) wp_unslash( $_POST['id'] ); if(!is_int($id)){ break; }   // fixed by WP DS FAQ 1.3.3 (1.0.10: 2011.08.22)
+
+        $select = $wpdb->get_results( $wpdb->prepare( "SELECT `answer` FROM %i WHERE `id` = %d", $table_quest, $id ), ARRAY_A );
+        $answer = wp_kses_post($select[0]['answer']);
+        
+        $results = '';
+        $results .= '<div class="dsfaq_answer">';
+        $results .= apply_filters('the_content', $answer, 'dsfaq_filters');
+        $results .= '<br><span class="dsfaq_tools">[&nbsp;<a href="#_" onclick="dsfaq_close_quest('.$id.');">'.__('Close', 'wp-ds-faq-plus').'</a>&nbsp;]</span>';
+        $results .= '</div>';
+        
+			// 2011.08.25 (1.0.11) Limitation by settings and current user permission
+//            if(current_user_can('level_10')){
+		if($settings_editor_permission){
+         	  $tools .= '[ <a href="#_" onclick="dsfaq_front_edit_quest('.$id.');">'.__('Edit', 'wp-ds-faq-plus').'</a> ]';
+
+			  // 2011.08.25 (1.0.11) Limitation by settings and current user permission
+			  if(! $settings['wp_dsfaq_plus_disable_all_delete'] && ! $settings['wp_dsfaq_plus_disable_frontedit_delete']){
+	           		 $tools .= '[ <a href="#_" onclick="this.innerHTML=\'<img src='.$dsfaq->plugurl.'img/ajax-loader.gif>\'; dsfaq_front_delete_quest('.$id.');">'.__('Delete&nbsp;question', 'wp-ds-faq-plus').'</a> ]';
+	          }else if($settings_admin_permission && ! $settings['wp_dsfaq_plus_apply_safetyoptions_to_admin']){
+	           		 $tools .= '[ <a href="#_" onclick="this.innerHTML=\'<img src='.$dsfaq->plugurl.'img/ajax-loader.gif>\'; dsfaq_front_delete_quest('.$id.');">'.__('Delete&nbsp;question', 'wp-ds-faq-plus').'</a> ]';
+	          }
+        }
+        
+        $results = addcslashes($results, $escape);
+        $tools   = addcslashes($tools, $escape);
+        $results = str_replace('\"','', $results);
+        $results = str_replace('\'','', $results);
+		
+        die("document.getElementById('dsfaq_answer_".$id."').innerHTML = '".$results."';\n
+        document.getElementById('dsfaq_tools_".$id."').innerHTML = '".$tools."';");
+        
+        break;
+        
+    case 'restore_settings':
+        dsfaq_plus_require_ajax_nonce();
+        update_option('wp_ds_faq_array', $dsfaq->wp_ds_faq_default_array);
+        
+        die("document.getElementById('dsfaq_h1').value = '".addcslashes($dsfaq->wp_ds_faq_default_array['wp_ds_faq_h1'], $escape)."';\n
+        document.getElementById('dsfaq_h2').value = '".addcslashes($dsfaq->wp_ds_faq_default_array['wp_ds_faq_h2'], $escape)."';\n
+        document.getElementById('dsfaq_css').value = '".addcslashes($dsfaq->wp_ds_faq_default_array['wp_ds_faq_css'], $escape)."';\n
+        document.getElementById('dsfaq_copyr').checked = 'true';\n
+        document.getElementById('dsfaq_progress').innerHTML = '<span style=\'color:green;\'>".__('Settings&nbsp;have&nbsp;been&nbsp;restore:', 'wp-ds-faq-plus')."&nbsp;".wp_date("Y-m-d H:i:s")."</span>';");
+        break;
+
+    default:
+        dsfaq_plus_ajax_error();
+        break;
+}
+
+die( "document.getElementById(\"s1\").innerHTML = '<span style=\"color:red;\">[Error id: 1000]</span>';" );
+}
 }
 
 $dsfaq = new dsfaq();
