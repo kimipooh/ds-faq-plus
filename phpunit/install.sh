@@ -15,7 +15,7 @@ WP_VERSION="${5-latest}"
 
 TMPDIR="${TMPDIR-/tmp}"
 WP_TESTS_DIR="${WP_TESTS_DIR-$TMPDIR/wordpress-tests-lib}"
-WP_CORE_DIR="${WP_CORE_DIR-$TMPDIR/wordpress/}"
+WP_CORE_DIR="${WP_CORE_DIR-$TMPDIR/wordpress}"
 
 download() {
 	if command -v curl >/dev/null 2>&1; then
@@ -28,6 +28,16 @@ download() {
 	fi
 }
 
+parse_db_host() {
+	if [[ "$DB_HOST" == *:* ]]; then
+		DB_HOSTNAME="${DB_HOST%%:*}"
+		DB_PORT="${DB_HOST##*:}"
+	else
+		DB_HOSTNAME="$DB_HOST"
+		DB_PORT="3306"
+	fi
+}
+
 install_wordpress() {
 	if [ -d "$WP_CORE_DIR/wp-includes" ]; then
 		echo "WordPress already installed at $WP_CORE_DIR"
@@ -36,35 +46,39 @@ install_wordpress() {
 
 	rm -rf "$TMPDIR/wordpress" "$TMPDIR/wordpress.tar.gz"
 
-	echo "Downloading WordPress..."
+	echo "Downloading WordPress core..."
 	download "https://wordpress.org/${WP_VERSION}.tar.gz" "$TMPDIR/wordpress.tar.gz"
-
 	tar -xzf "$TMPDIR/wordpress.tar.gz" -C "$TMPDIR"
-	# 展開先がそのまま $TMPDIR/wordpress なので mv は不要
+
 	test -d "$WP_CORE_DIR/wp-includes"
 }
 
 install_test_suite() {
-	if [ -d "$WP_TESTS_DIR/includes" ] && [ -f "$WP_TESTS_DIR/includes/functions.php" ]; then
+	if [ -f "$WP_TESTS_DIR/includes/functions.php" ]; then
 		echo "WordPress test library already installed at $WP_TESTS_DIR"
 		return
 	fi
 
 	rm -rf "$WP_TESTS_DIR"
-	mkdir -p "$WP_TESTS_DIR/includes" "$WP_TESTS_DIR/data"
+	mkdir -p "$WP_TESTS_DIR"
 
-	echo "Downloading WordPress test library..."
-	download "https://develop.svn.wordpress.org/trunk/tests/phpunit/includes/bootstrap.php" "$WP_TESTS_DIR/includes/bootstrap.php"
-	download "https://develop.svn.wordpress.org/trunk/tests/phpunit/includes/functions.php" "$WP_TESTS_DIR/includes/functions.php"
-	download "https://develop.svn.wordpress.org/trunk/tests/phpunit/includes/install.php" "$WP_TESTS_DIR/includes/install.php"
-	download "https://develop.svn.wordpress.org/trunk/tests/phpunit/data/formatting/entities.txt" "$WP_TESTS_DIR/data/entities.txt"
+	if ! command -v svn >/dev/null 2>&1; then
+		echo "Error: svn command is required to fetch the WordPress test library."
+		exit 1
+	fi
+
+	echo "Exporting WordPress test library..."
+	svn export --quiet https://develop.svn.wordpress.org/trunk/tests/phpunit/includes "$WP_TESTS_DIR/includes"
+	svn export --quiet https://develop.svn.wordpress.org/trunk/tests/phpunit/data "$WP_TESTS_DIR/data"
 }
 
 install_db() {
+	parse_db_host
+
 	echo "Creating test database if needed..."
 	mysqladmin create "$DB_NAME" \
-		--host="${DB_HOST%%:*}" \
-		--port="${DB_HOST##*:}" \
+		--host="$DB_HOSTNAME" \
+		--port="$DB_PORT" \
 		--user="$DB_USER" \
 		--password="$DB_PASS" \
 		|| true
@@ -87,7 +101,7 @@ define( 'WP_PHP_BINARY', 'php' );
 define( 'WPLANG', '' );
 
 if ( ! defined( 'ABSPATH' ) ) {
-	define( 'ABSPATH', '$WP_CORE_DIR' );
+	define( 'ABSPATH', '$WP_CORE_DIR/' );
 }
 EOF
 }
