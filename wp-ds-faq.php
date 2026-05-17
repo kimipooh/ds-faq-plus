@@ -3,15 +3,15 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
 /*
-Plugin Name: WP DS FAQ Plus
+Plugin Name: DS FAQ Plus
 Plugin URI: http://kitaney.jp/~kitani/tools/wordpress/wp-ds-faq-plus_en.html
-Description: WP DS FAQ Plus is the expand of WP DS FAQ  plugin. The plugin bases on WP DS FAQ 1.3.3. This plugin includes the fixed some issues (Quotation and Security, such as SQL Injection and CSRF. ) , Japanese translation, improvement of interface, and SSL Admin setting.
-Version: 2.0.0
+Description: DS FAQ Plus is an extended version of WP DS FAQ 1.3.3. It includes fixes for quotation handling and security issues such as SQL Injection and CSRF, Japanese translation improvements, interface enhancements, and SSL admin support.
+Version: 2.1.0
 Author: Kimiya Kitani
 Author URI: https://profiles.wordpress.org/kimipooh/
-License: GPLv2 or later
-License URI: https://www.gnu.org/licenses/gpl-2.0.html
 Text Domain: wp-ds-faq-plus
+License: GPL-2.0-or-later
+License URI: https://www.gnu.org/licenses/gpl-2.0.html
 */
 
 if ( ! defined( 'ABSPATH' ) ) exit;

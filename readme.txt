@@ -1,10 +1,10 @@
-=== WP DS FAQ Plus ===
+=== DS FAQ Plus ===
 Contributors: kimipooh
 Tags: faq, answer, question, documentation
 Requires at least: 6.0
-Tested up to: 6.9
+Tested up to: 7.0
 Requires PHP: 8.0
-Stable tag: 2.0.0
+Stable tag: 2.1.0
 License: GPL v2  or later
 License URI: http://www.gnu.org/licenses/gpl-2.0.html
 
@@ -60,6 +60,10 @@ When this plugin is deactivated and "WP DS FAQ" is activated, the special functi
 5. Edit Menu.
 
 == Changelog ==
+= 2.1.0 =
+* Improved Plugin Check compatibility for escaping, enqueueing, nonce handling, and SQL table name handling.
+* Confirmed PHP 8.4 compatibility checks.
+
 = 2.0.0 =
 Major refactoring and modernization of the plugin.
 
